@@ -1,0 +1,34 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Go
+/bin/
+/pkg/
+/vendor/
+*.test
+*.out
+coverage.out
+
+# Build and cache output
+/build/
+/dist/
+/.cache/
+/tmp/
+/temp/
+
+# Local tool folders
+/.agents/
+/.codex/
+/.claude/
+/.obsidian/
+/doc/
+
+# Environment and editor noise
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+*.log
