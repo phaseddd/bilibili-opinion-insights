@@ -269,9 +269,10 @@ async fn run_comments(args: CommentsArgs) -> Result<()> {
         match collect_one_video_comments(&client, &args, &bvid).await {
             Ok(outcome) => {
                 println!(
-                    "wrote {} comments for {} (main_pages: {}, reply_pages: {}, next_cursor: {})",
+                    "wrote {} comments for {} (expected_total: {}, main_pages: {}, reply_pages: {}, next_cursor: {})",
                     outcome.comment_count,
                     outcome.bvid,
+                    outcome.expected_total,
                     outcome.main_pages_scanned,
                     outcome.reply_pages_scanned,
                     outcome.next_cursor.as_deref().unwrap_or("<none>")
@@ -339,6 +340,7 @@ async fn run_danmaku(args: DanmakuArgs) -> Result<()> {
 
 struct VideoCommentOutcome {
     bvid: String,
+    expected_total: u64,
     comment_count: usize,
     main_pages_scanned: usize,
     reply_pages_scanned: usize,
@@ -368,6 +370,16 @@ async fn collect_one_video_comments(
 ) -> Result<VideoCommentOutcome> {
     tracing::info!(bvid, "collecting comments");
     let video = client.video_info(bvid).await?;
+    let expected_total = match client.comment_count(video.aid).await {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to fetch reply/count; falling back to video stat.reply"
+            );
+            video.comment_count
+        }
+    };
     let batch = client
         .main_comments(
             &video.bvid,
@@ -381,6 +393,7 @@ async fn collect_one_video_comments(
 
     Ok(VideoCommentOutcome {
         bvid: video.bvid,
+        expected_total,
         comment_count: batch.comments.len(),
         main_pages_scanned: batch.main_pages_scanned,
         reply_pages_scanned: batch.reply_pages_scanned,

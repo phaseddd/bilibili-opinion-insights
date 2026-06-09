@@ -9,6 +9,7 @@ use super::client::{BiliClient, api_error_code};
 
 const REPLY_MAIN_URL: &str = "https://api.bilibili.com/x/v2/reply/wbi/main";
 const REPLY_LEGACY_MAIN_URL: &str = "https://api.bilibili.com/x/v2/reply/main";
+const REPLY_COUNT_URL: &str = "https://api.bilibili.com/x/v2/reply/count";
 const REPLY_DETAIL_URL: &str = "https://api.bilibili.com/x/v2/reply/reply";
 const REPLY_PAGE_SIZE: u64 = 20;
 
@@ -135,7 +136,18 @@ struct ReplyControlData {
     location: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ReplyCountData {
+    count: u64,
+}
+
 impl BiliClient {
+    pub async fn comment_count(&self, oid: u64) -> Result<u64> {
+        let query = [("oid", oid.to_string()), ("type", "1".to_string())];
+        let data: ReplyCountData = self.get_api(REPLY_COUNT_URL, &query).await?;
+        Ok(data.count)
+    }
+
     pub async fn main_comments(
         &self,
         bvid: &str,
@@ -554,5 +566,13 @@ mod tests {
         assert_eq!(record.current_level, 6);
         assert_eq!(record.location, "IP属地：上海");
         assert_eq!(record.reply_count, 2);
+    }
+
+    #[test]
+    fn parses_reply_count_data() {
+        let payload = r#"{ "count": 4689 }"#;
+        let count: ReplyCountData = serde_json::from_str(payload).expect("count JSON");
+
+        assert_eq!(count.count, 4689);
     }
 }
