@@ -1,10 +1,12 @@
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::bili::client::BiliClient;
+use crate::bili::comment::CommentRecord;
 use crate::bili::video::VideoInfo;
 
 #[derive(Debug, Parser)]
@@ -91,18 +93,54 @@ async fn run_video(args: VideoArgs) -> Result<()> {
 }
 
 async fn run_comments(args: CommentsArgs) -> Result<()> {
-    if args.bvids.is_empty() && args.input.is_none() {
+    let bvids = collect_comment_bvids(&args.bvids, &args.input)?;
+    let cookie_header = load_cookie_header(&args.cookie, &args.sessdata)?;
+    let client = BiliClient::new(cookie_header)?;
+
+    for bvid in bvids {
+        tracing::info!(bvid, "collecting first comment page");
+        let video = client.video_info(&bvid).await?;
+        let page = client.main_comment_page(&video.bvid, video.aid).await?;
+        let paths = write_comment_outputs(&args.output, &video.bvid, &page.comments, &args.format)?;
+
+        println!(
+            "wrote {} comments for {} (next_offset: {})",
+            page.comments.len(),
+            video.bvid,
+            page.next_offset.as_deref().unwrap_or("<none>")
+        );
+        for path in paths {
+            println!("output: {}", path.display());
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_comment_bvids(positional: &[String], input: &Option<PathBuf>) -> Result<Vec<String>> {
+    let mut bvids = positional
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+
+    if let Some(path) = input {
+        let content = fs::read_to_string(path)?;
+        bvids.extend(
+            content
+                .lines()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+        );
+    }
+
+    if bvids.is_empty() {
         bail!("provide at least one BVID or pass --input <FILE>");
     }
 
-    tracing::info!(
-        bvid_count = args.bvids.len(),
-        has_input = args.input.is_some(),
-        output = %args.output.display(),
-        "comment collection command parsed"
-    );
-
-    bail!("comment collection is not implemented yet; this milestone only scaffolds the CLI")
+    Ok(bvids)
 }
 
 fn load_cookie_header(
@@ -132,6 +170,54 @@ fn load_cookie_header(
         }
         (None, None) => Ok(None),
     }
+}
+
+fn write_comment_outputs(
+    output_root: &Path,
+    bvid: &str,
+    comments: &[CommentRecord],
+    formats: &[OutputFormat],
+) -> Result<Vec<PathBuf>> {
+    let video_dir = output_root.join(bvid);
+    fs::create_dir_all(&video_dir)?;
+
+    let mut paths = Vec::new();
+    for format in formats {
+        match format {
+            OutputFormat::Csv => {
+                let path = video_dir.join("comments.csv");
+                write_comments_csv(&path, comments)?;
+                paths.push(path);
+            }
+            OutputFormat::Jsonl => {
+                let path = video_dir.join("comments.jsonl");
+                write_comments_jsonl(&path, comments)?;
+                paths.push(path);
+            }
+        }
+    }
+
+    Ok(paths)
+}
+
+fn write_comments_csv(path: &Path, comments: &[CommentRecord]) -> Result<()> {
+    let mut writer = csv::Writer::from_path(path)?;
+    for comment in comments {
+        writer.serialize(comment)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_comments_jsonl(path: &Path, comments: &[CommentRecord]) -> Result<()> {
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    for comment in comments {
+        serde_json::to_writer(&mut writer, comment)?;
+        writeln!(writer)?;
+    }
+    writer.flush()?;
+    Ok(())
 }
 
 fn print_video_info(video: &VideoInfo) {
@@ -200,5 +286,19 @@ mod tests {
             load_cookie_header(&None, &Some("sample_sessdata".to_string())).expect("cookie header");
 
         assert_eq!(cookie, Some("SESSDATA=sample_sessdata".to_string()));
+    }
+
+    #[test]
+    fn combines_positional_and_input_bvids() {
+        let path =
+            std::env::temp_dir().join(format!("bili-opinion-bvids-{}.txt", std::process::id()));
+        fs::write(&path, "\nBV_input_1\nBV_input_2\n").expect("write input");
+
+        let bvids = collect_comment_bvids(&["BV_positional".to_string()], &Some(path.clone()))
+            .expect("bvids");
+
+        fs::remove_file(path).expect("remove input");
+
+        assert_eq!(bvids, ["BV_positional", "BV_input_1", "BV_input_2"]);
     }
 }
