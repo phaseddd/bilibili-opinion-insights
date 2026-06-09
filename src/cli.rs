@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 
 use crate::bili::client::BiliClient;
 use crate::bili::comment::CommentRecord;
@@ -104,30 +105,79 @@ async fn run_comments(args: CommentsArgs) -> Result<()> {
     let bvids = collect_comment_bvids(&args.bvids, &args.input)?;
     let cookie_header = load_cookie_header(&args.cookie, &args.sessdata)?;
     let client = BiliClient::new(cookie_header)?;
+    let mut failures = Vec::new();
 
     for bvid in bvids {
-        tracing::info!(bvid, "collecting comments");
-        let video = client.video_info(&bvid).await?;
-        let batch = client
-            .main_comments(&video.bvid, video.aid, args.max_pages, args.max_reply_pages)
-            .await?;
-        let paths =
-            write_comment_outputs(&args.output, &video.bvid, &batch.comments, &args.format)?;
-
-        println!(
-            "wrote {} comments for {} (main_pages: {}, reply_pages: {}, next_cursor: {})",
-            batch.comments.len(),
-            video.bvid,
-            batch.main_pages_scanned,
-            batch.reply_pages_scanned,
-            batch.next_cursor.as_deref().unwrap_or("<none>")
-        );
-        for path in paths {
-            println!("output: {}", path.display());
+        match collect_one_video_comments(&client, &args, &bvid).await {
+            Ok(outcome) => {
+                println!(
+                    "wrote {} comments for {} (main_pages: {}, reply_pages: {}, next_cursor: {})",
+                    outcome.comment_count,
+                    outcome.bvid,
+                    outcome.main_pages_scanned,
+                    outcome.reply_pages_scanned,
+                    outcome.next_cursor.as_deref().unwrap_or("<none>")
+                );
+                for path in outcome.paths {
+                    println!("output: {}", path.display());
+                }
+            }
+            Err(error) => {
+                eprintln!("failed to collect {bvid}: {error}");
+                failures.push(VideoFailure {
+                    bvid,
+                    error: error.to_string(),
+                });
+            }
         }
     }
 
+    if !failures.is_empty() {
+        let path = write_failure_report(&args.output, &failures)?;
+        eprintln!("failure_report: {}", path.display());
+        bail!("{} video(s) failed", failures.len());
+    }
+
     Ok(())
+}
+
+struct VideoCommentOutcome {
+    bvid: String,
+    comment_count: usize,
+    main_pages_scanned: usize,
+    reply_pages_scanned: usize,
+    next_cursor: Option<String>,
+    paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Serialize)]
+struct VideoFailure {
+    #[serde(rename = "Bvid")]
+    bvid: String,
+    #[serde(rename = "Error")]
+    error: String,
+}
+
+async fn collect_one_video_comments(
+    client: &BiliClient,
+    args: &CommentsArgs,
+    bvid: &str,
+) -> Result<VideoCommentOutcome> {
+    tracing::info!(bvid, "collecting comments");
+    let video = client.video_info(bvid).await?;
+    let batch = client
+        .main_comments(&video.bvid, video.aid, args.max_pages, args.max_reply_pages)
+        .await?;
+    let paths = write_comment_outputs(&args.output, &video.bvid, &batch.comments, &args.format)?;
+
+    Ok(VideoCommentOutcome {
+        bvid: video.bvid,
+        comment_count: batch.comments.len(),
+        main_pages_scanned: batch.main_pages_scanned,
+        reply_pages_scanned: batch.reply_pages_scanned,
+        next_cursor: batch.next_cursor,
+        paths,
+    })
 }
 
 fn collect_comment_bvids(positional: &[String], input: &Option<PathBuf>) -> Result<Vec<String>> {
@@ -183,6 +233,17 @@ fn load_cookie_header(
         }
         (None, None) => Ok(None),
     }
+}
+
+fn write_failure_report(output_root: &Path, failures: &[VideoFailure]) -> Result<PathBuf> {
+    fs::create_dir_all(output_root)?;
+    let path = output_root.join("failures.csv");
+    let mut writer = csv::Writer::from_path(&path)?;
+    for failure in failures {
+        writer.serialize(failure)?;
+    }
+    writer.flush()?;
+    Ok(path)
 }
 
 fn write_comment_outputs(
