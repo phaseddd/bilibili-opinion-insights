@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use crate::bili::auth::{QrLoginStatus, render_terminal_qr};
 use crate::bili::client::BiliClient;
-use crate::bili::comment::CommentRecord;
+use crate::bili::comment::{CommentRecord, CommentScanSummary};
 use crate::bili::danmaku::{DanmakuRecord, DanmakuSegmentContext, segment_count};
 use crate::bili::video::VideoInfo;
 
@@ -269,13 +269,14 @@ async fn run_comments(args: CommentsArgs) -> Result<()> {
         match collect_one_video_comments(&client, &args, &bvid).await {
             Ok(outcome) => {
                 println!(
-                    "wrote {} comments for {} (expected_total: {}, main_pages: {}, reply_pages: {}, next_cursor: {})",
-                    outcome.comment_count,
+                    "scanned {} comments and appended {} new comments for {} (expected_total: {}, main_pages: {}, reply_pages: {}, next_cursor: {})",
+                    outcome.summary.comments_scanned,
+                    outcome.appended_count,
                     outcome.bvid,
                     outcome.expected_total,
-                    outcome.main_pages_scanned,
-                    outcome.reply_pages_scanned,
-                    outcome.next_cursor.as_deref().unwrap_or("<none>")
+                    outcome.summary.main_pages_scanned,
+                    outcome.summary.reply_pages_scanned,
+                    outcome.summary.next_cursor.as_deref().unwrap_or("<none>")
                 );
                 for output in outcome.outputs {
                     println!(
@@ -341,10 +342,8 @@ async fn run_danmaku(args: DanmakuArgs) -> Result<()> {
 struct VideoCommentOutcome {
     bvid: String,
     expected_total: u64,
-    comment_count: usize,
-    main_pages_scanned: usize,
-    reply_pages_scanned: usize,
-    next_cursor: Option<String>,
+    summary: CommentScanSummary,
+    appended_count: usize,
     outputs: Vec<OutputWriteResult>,
 }
 
@@ -380,24 +379,33 @@ async fn collect_one_video_comments(
             video.comment_count
         }
     };
-    let batch = client
-        .main_comments(
+    let mut writer = CommentOutputWriter::create(&args.output, &video.bvid, &args.format)?;
+    for path in writer.paths() {
+        tracing::info!(path = %path.display(), "initialized comment output");
+    }
+
+    let summary = client
+        .stream_comments(
             &video.bvid,
             video.aid,
             args.max_pages,
             args.max_reply_pages,
             request_delay(args.request_delay_ms),
+            |comments| writer.write_comments(comments),
         )
         .await?;
-    let outputs = write_comment_outputs(&args.output, &video.bvid, &batch.comments, &args.format)?;
+    let outputs = writer.finish()?;
+    let appended_count = outputs
+        .iter()
+        .map(|output| output.appended_count)
+        .max()
+        .unwrap_or(0);
 
     Ok(VideoCommentOutcome {
         bvid: video.bvid,
         expected_total,
-        comment_count: batch.comments.len(),
-        main_pages_scanned: batch.main_pages_scanned,
-        reply_pages_scanned: batch.reply_pages_scanned,
-        next_cursor: batch.next_cursor,
+        summary,
+        appended_count,
         outputs,
     })
 }
@@ -549,44 +557,234 @@ fn write_failure_report(output_root: &Path, failures: &[VideoFailure]) -> Result
     Ok(path)
 }
 
+#[cfg(test)]
 fn write_comment_outputs(
     output_root: &Path,
     bvid: &str,
     comments: &[CommentRecord],
     formats: &[OutputFormat],
 ) -> Result<Vec<OutputWriteResult>> {
-    let video_dir = output_root.join(bvid);
-    fs::create_dir_all(&video_dir)?;
+    let mut writer = CommentOutputWriter::create(output_root, bvid, formats)?;
+    writer.write_comments(comments)?;
+    writer.finish()
+}
 
-    let mut outputs = Vec::new();
-    for format in formats {
-        match format {
-            OutputFormat::Csv => {
-                let path = video_dir.join("comments.csv");
-                let existing = read_existing_csv_rpids(&path)?;
-                let comments = comments_missing_from(comments, &existing);
-                let appended_count = comments.len();
-                write_comments_csv(&path, &comments)?;
-                outputs.push(OutputWriteResult {
-                    path,
-                    appended_count,
-                });
+const COMMENT_CSV_HEADER: &[&str] = &[
+    "Uname",
+    "Sex",
+    "Content",
+    "Pictures",
+    "Picture_count",
+    "Emotes",
+    "Emote_urls",
+    "At_users",
+    "Jump_url_keys",
+    "Jump_urls",
+    "Video_time_seconds",
+    "Video_time_links",
+    "Rpid",
+    "Oid",
+    "Bvid",
+    "Mid",
+    "Parent",
+    "Fansgrade",
+    "Ctime",
+    "Like",
+    "Following",
+    "Current_level",
+    "Location",
+];
+
+struct CommentOutputWriter {
+    outputs: Vec<CommentFormatWriter>,
+}
+
+impl CommentOutputWriter {
+    fn create(
+        output_root: &Path,
+        bvid: &str,
+        formats: &[OutputFormat],
+    ) -> Result<CommentOutputWriter> {
+        let video_dir = output_root.join(bvid);
+        fs::create_dir_all(&video_dir)?;
+
+        let mut outputs = Vec::new();
+        for format in formats {
+            match format {
+                OutputFormat::Csv => {
+                    let path = video_dir.join("comments.csv");
+                    outputs.push(CommentFormatWriter::csv(path)?);
+                }
+                OutputFormat::Jsonl => {
+                    let path = video_dir.join("comments.jsonl");
+                    outputs.push(CommentFormatWriter::jsonl(path)?);
+                }
             }
-            OutputFormat::Jsonl => {
-                let path = video_dir.join("comments.jsonl");
-                let existing = read_existing_jsonl_rpids(&path)?;
-                let comments = comments_missing_from(comments, &existing);
-                let appended_count = comments.len();
-                write_comments_jsonl(&path, &comments)?;
-                outputs.push(OutputWriteResult {
-                    path,
-                    appended_count,
-                });
-            }
+        }
+
+        Ok(Self { outputs })
+    }
+
+    fn paths(&self) -> Vec<&Path> {
+        self.outputs.iter().map(CommentFormatWriter::path).collect()
+    }
+
+    fn write_comments(&mut self, comments: &[CommentRecord]) -> Result<()> {
+        for output in &mut self.outputs {
+            output.write_comments(comments)?;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Vec<OutputWriteResult>> {
+        let mut results = Vec::new();
+        for output in &mut self.outputs {
+            output.flush()?;
+            results.push(output.result());
+        }
+        Ok(results)
+    }
+}
+
+enum CommentFormatWriter {
+    Csv {
+        path: PathBuf,
+        writer: Box<csv::Writer<File>>,
+        seen: HashSet<u64>,
+        appended_count: usize,
+    },
+    Jsonl {
+        path: PathBuf,
+        writer: BufWriter<File>,
+        seen: HashSet<u64>,
+        appended_count: usize,
+    },
+}
+
+impl CommentFormatWriter {
+    fn csv(path: PathBuf) -> Result<Self> {
+        let append_without_header = path.exists() && path.metadata()?.len() > 0;
+        if append_without_header {
+            validate_existing_csv_header(&path)?;
+        }
+        let seen = read_existing_csv_rpids(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let writer = csv::WriterBuilder::new()
+            .has_headers(!append_without_header)
+            .from_writer(file);
+
+        Ok(Self::Csv {
+            path,
+            writer: Box::new(writer),
+            seen,
+            appended_count: 0,
+        })
+    }
+
+    fn jsonl(path: PathBuf) -> Result<Self> {
+        let seen = read_existing_jsonl_rpids(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let writer = BufWriter::new(file);
+
+        Ok(Self::Jsonl {
+            path,
+            writer,
+            seen,
+            appended_count: 0,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        match self {
+            Self::Csv { path, .. } | Self::Jsonl { path, .. } => path,
         }
     }
 
-    Ok(outputs)
+    fn write_comments(&mut self, comments: &[CommentRecord]) -> Result<()> {
+        match self {
+            Self::Csv {
+                writer,
+                seen,
+                appended_count,
+                ..
+            } => {
+                for comment in comments {
+                    if seen.insert(comment.rpid) {
+                        writer.serialize(comment)?;
+                        *appended_count += 1;
+                    }
+                }
+                flush_csv_writer(writer.as_mut())?;
+            }
+            Self::Jsonl {
+                writer,
+                seen,
+                appended_count,
+                ..
+            } => {
+                for comment in comments {
+                    if seen.insert(comment.rpid) {
+                        serde_json::to_writer(&mut *writer, comment)?;
+                        writeln!(writer)?;
+                        *appended_count += 1;
+                    }
+                }
+                flush_jsonl_writer(writer)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        match self {
+            Self::Csv { writer, .. } => flush_csv_writer(writer.as_mut())?,
+            Self::Jsonl { writer, .. } => flush_jsonl_writer(writer)?,
+        }
+        Ok(())
+    }
+
+    fn result(&self) -> OutputWriteResult {
+        match self {
+            Self::Csv {
+                path,
+                appended_count,
+                ..
+            }
+            | Self::Jsonl {
+                path,
+                appended_count,
+                ..
+            } => OutputWriteResult {
+                path: path.clone(),
+                appended_count: *appended_count,
+            },
+        }
+    }
+}
+
+fn flush_csv_writer(writer: &mut csv::Writer<File>) -> Result<()> {
+    writer.flush()?;
+    writer.get_ref().sync_data()?;
+    Ok(())
+}
+
+fn flush_jsonl_writer(writer: &mut BufWriter<File>) -> Result<()> {
+    writer.flush()?;
+    writer.get_mut().sync_data()?;
+    Ok(())
+}
+
+fn validate_existing_csv_header(path: &Path) -> Result<()> {
+    let mut reader = csv::Reader::from_path(path)?;
+    let headers = reader.headers()?;
+    if headers.iter().collect::<Vec<_>>() != COMMENT_CSV_HEADER {
+        bail!(
+            "existing CSV header does not match current comment schema: {}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 struct OutputWriteResult {
@@ -598,17 +796,6 @@ struct OutputWriteResult {
 struct ExistingCommentRow {
     #[serde(rename = "Rpid")]
     rpid: u64,
-}
-
-fn comments_missing_from(
-    comments: &[CommentRecord],
-    existing: &HashSet<u64>,
-) -> Vec<CommentRecord> {
-    comments
-        .iter()
-        .filter(|comment| !existing.contains(&comment.rpid))
-        .cloned()
-        .collect()
 }
 
 fn read_existing_csv_rpids(path: &Path) -> Result<HashSet<u64>> {
@@ -643,30 +830,6 @@ fn read_existing_jsonl_rpids(path: &Path) -> Result<HashSet<u64>> {
         }
     }
     Ok(rpids)
-}
-
-fn write_comments_csv(path: &Path, comments: &[CommentRecord]) -> Result<()> {
-    let append_without_header = path.exists() && path.metadata()?.len() > 0;
-    let file = OpenOptions::new().create(true).append(true).open(path)?;
-    let mut writer = csv::WriterBuilder::new()
-        .has_headers(!append_without_header)
-        .from_writer(file);
-    for comment in comments {
-        writer.serialize(comment)?;
-    }
-    writer.flush()?;
-    Ok(())
-}
-
-fn write_comments_jsonl(path: &Path, comments: &[CommentRecord]) -> Result<()> {
-    let file = OpenOptions::new().create(true).append(true).open(path)?;
-    let mut writer = BufWriter::new(file);
-    for comment in comments {
-        serde_json::to_writer(&mut writer, comment)?;
-        writeln!(writer)?;
-    }
-    writer.flush()?;
-    Ok(())
 }
 
 fn print_video_info(video: &VideoInfo) {
@@ -828,6 +991,73 @@ mod tests {
 
         assert_eq!(csv.lines().count(), 3);
         assert_eq!(jsonl.lines().count(), 2);
+
+        fs::remove_dir_all(output_root).expect("remove output");
+    }
+
+    #[test]
+    fn comment_output_writer_creates_files_and_flushes_each_batch() {
+        let output_root =
+            std::env::temp_dir().join(format!("bili-opinion-stream-output-{}", std::process::id()));
+        if output_root.exists() {
+            fs::remove_dir_all(&output_root).expect("remove old output");
+        }
+
+        let csv_path = output_root.join("BV1xx411c7mD").join("comments.csv");
+        let jsonl_path = output_root.join("BV1xx411c7mD").join("comments.jsonl");
+        let mut writer = CommentOutputWriter::create(
+            &output_root,
+            "BV1xx411c7mD",
+            &[OutputFormat::Csv, OutputFormat::Jsonl],
+        )
+        .expect("create writer");
+
+        assert!(csv_path.exists());
+        assert!(jsonl_path.exists());
+
+        writer
+            .write_comments(&[sample_comment(1)])
+            .expect("write first batch");
+        assert_eq!(
+            fs::read_to_string(&csv_path)
+                .expect("csv after first batch")
+                .lines()
+                .count(),
+            2
+        );
+        assert_eq!(
+            fs::read_to_string(&jsonl_path)
+                .expect("jsonl after first batch")
+                .lines()
+                .count(),
+            1
+        );
+
+        writer
+            .write_comments(&[sample_comment(1), sample_comment(2)])
+            .expect("write second batch");
+        let outputs = writer.finish().expect("finish writer");
+        assert_eq!(
+            outputs
+                .iter()
+                .map(|output| output.appended_count)
+                .collect::<Vec<_>>(),
+            [2, 2]
+        );
+        assert_eq!(
+            fs::read_to_string(&csv_path)
+                .expect("csv after second batch")
+                .lines()
+                .count(),
+            3
+        );
+        assert_eq!(
+            fs::read_to_string(&jsonl_path)
+                .expect("jsonl after second batch")
+                .lines()
+                .count(),
+            2
+        );
 
         fs::remove_dir_all(output_root).expect("remove output");
     }

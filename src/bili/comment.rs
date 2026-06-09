@@ -21,16 +21,45 @@ pub struct CommentBatch {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct CommentScanSummary {
+    pub comments_scanned: usize,
+    pub main_root_comments_scanned: usize,
+    pub secondary_comments_scanned: usize,
+    pub main_pages_scanned: usize,
+    pub reply_pages_scanned: usize,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct CommentPage {
     comments: Vec<CommentRecord>,
     next_cursor: Option<CommentCursor>,
+    is_end: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum CommentCursor {
     Wbi(String),
     Legacy(u64),
+}
+
+#[derive(Clone, Copy)]
+struct MainCommentScanConfig<'a> {
+    bvid: &'a str,
+    oid: u64,
+    max_pages: Option<usize>,
+    request_delay: Option<Duration>,
+}
+
+#[derive(Clone, Copy)]
+struct SecondaryCommentScanConfig<'a> {
+    bvid: &'a str,
+    oid: u64,
+    root: u64,
+    expected_count: u64,
+    max_pages: Option<usize>,
+    request_delay: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -95,6 +124,8 @@ struct ReplyMainData {
 
 #[derive(Debug, Default, Deserialize)]
 struct ReplyCursorData {
+    #[serde(default)]
+    is_end: bool,
     #[serde(default)]
     pagination_reply: Option<PaginationReplyData>,
     #[serde(default)]
@@ -202,73 +233,139 @@ impl BiliClient {
         max_reply_pages: Option<usize>,
         request_delay: Option<Duration>,
     ) -> Result<CommentBatch> {
-        let mut batch = match self.wbi_main_comment_page(bvid, oid, None).await {
+        let mut comments = Vec::new();
+        let summary = self
+            .stream_comments(
+                bvid,
+                oid,
+                max_pages,
+                max_reply_pages,
+                request_delay,
+                |batch| {
+                    comments.extend_from_slice(batch);
+                    Ok(())
+                },
+            )
+            .await?;
+
+        Ok(CommentBatch {
+            comments,
+            main_pages_scanned: summary.main_pages_scanned,
+            reply_pages_scanned: summary.reply_pages_scanned,
+            next_cursor: summary.next_cursor,
+        })
+    }
+
+    pub async fn stream_comments<F>(
+        &self,
+        bvid: &str,
+        oid: u64,
+        max_pages: Option<usize>,
+        max_reply_pages: Option<usize>,
+        request_delay: Option<Duration>,
+        mut on_comments: F,
+    ) -> Result<CommentScanSummary>
+    where
+        F: FnMut(&[CommentRecord]) -> Result<()>,
+    {
+        let mut seen = HashSet::new();
+        let mut roots = Vec::new();
+        let main_config = MainCommentScanConfig {
+            bvid,
+            oid,
+            max_pages,
+            request_delay,
+        };
+        let mut summary = match self.legacy_main_comment_page(bvid, oid, 0).await {
             Ok(page) => {
-                self.collect_wbi_main_comments(bvid, oid, page, max_pages, request_delay)
-                    .await
+                self.stream_legacy_main_comments(
+                    main_config,
+                    page,
+                    &mut seen,
+                    &mut roots,
+                    &mut on_comments,
+                )
+                .await
             }
             Err(error) if api_error_code(&error) == Some(-101) => {
                 tracing::warn!(
-                    "WBI comment endpoint requires login; falling back to legacy endpoint"
+                    "legacy comment endpoint requires login; falling back to WBI endpoint"
                 );
-                let page = self.legacy_main_comment_page(bvid, oid, 0).await?;
-                self.collect_legacy_main_comments(bvid, oid, page, max_pages, request_delay)
-                    .await
+                let page = self.wbi_main_comment_page(bvid, oid, None).await?;
+                self.stream_wbi_main_comments(
+                    main_config,
+                    page,
+                    &mut seen,
+                    &mut roots,
+                    &mut on_comments,
+                )
+                .await
             }
             Err(error) => Err(error),
         }?;
 
-        let mut seen = batch
-            .comments
-            .iter()
-            .map(|comment| comment.rpid)
-            .collect::<HashSet<_>>();
-        let roots = batch
-            .comments
-            .iter()
-            .filter(|comment| comment.reply_count > 0)
-            .map(|comment| (comment.rpid, comment.reply_count))
-            .collect::<Vec<_>>();
-
         for (root, expected_count) in roots {
+            let reply_config = SecondaryCommentScanConfig {
+                bvid,
+                oid,
+                root,
+                expected_count,
+                max_pages: max_reply_pages,
+                request_delay,
+            };
             let reply_batch = self
-                .secondary_comments(
-                    bvid,
-                    oid,
-                    root,
-                    expected_count,
-                    max_reply_pages,
-                    request_delay,
-                )
+                .stream_secondary_comments(reply_config, &mut seen, &mut on_comments)
                 .await?;
-            batch.reply_pages_scanned += reply_batch.pages_scanned;
-            push_unique_comments(&mut batch.comments, &mut seen, reply_batch.comments);
+            summary.reply_pages_scanned += reply_batch.pages_scanned;
+            summary.secondary_comments_scanned += reply_batch.comments_scanned;
+            summary.comments_scanned += reply_batch.comments_scanned;
         }
 
-        Ok(batch)
+        Ok(summary)
     }
 
-    async fn collect_wbi_main_comments(
+    async fn stream_wbi_main_comments<F>(
         &self,
-        bvid: &str,
-        oid: u64,
+        config: MainCommentScanConfig<'_>,
         first_page: CommentPage,
-        max_pages: Option<usize>,
-        request_delay: Option<Duration>,
-    ) -> Result<CommentBatch> {
-        let mut comments = Vec::new();
-        let mut seen = HashSet::new();
+        seen: &mut HashSet<u64>,
+        roots: &mut Vec<(u64, u64)>,
+        on_comments: &mut F,
+    ) -> Result<CommentScanSummary>
+    where
+        F: FnMut(&[CommentRecord]) -> Result<()>,
+    {
+        let mut summary = CommentScanSummary::default();
         let mut seen_cursors = HashSet::new();
-        let mut pages_scanned = 0;
         let mut page = Some(first_page);
         let mut next_cursor = None;
 
         while let Some(current_page) = page {
-            pages_scanned += 1;
-            push_unique_comments(&mut comments, &mut seen, current_page.comments);
+            summary.main_pages_scanned += 1;
+            let page_is_end = current_page.is_end;
+            let page_comment_count = current_page.comments.len();
+            let unique_comments = unique_comments_from_page(seen, current_page.comments);
+            let unique_comment_count = unique_comments.len();
             next_cursor = current_page.next_cursor;
+            collect_reply_roots(&unique_comments, roots);
+            emit_comments(&unique_comments, on_comments)?;
+            summary.main_root_comments_scanned += unique_comment_count;
+            summary.comments_scanned += unique_comment_count;
+            tracing::info!(
+                page = summary.main_pages_scanned,
+                page_comments = page_comment_count,
+                unique_page_comments = unique_comment_count,
+                root_comments_scanned = summary.main_root_comments_scanned,
+                is_end = page_is_end,
+                next_cursor = ?next_cursor,
+                "collected WBI main comment page"
+            );
 
-            if reached_page_limit(pages_scanned, max_pages) {
+            if reached_page_limit(summary.main_pages_scanned, config.max_pages) {
+                break;
+            }
+            if page_is_end || page_comment_count == 0 {
+                next_cursor = None;
                 break;
             }
 
@@ -279,42 +376,63 @@ impl BiliClient {
                 break;
             }
             if !seen_cursors.insert(offset.clone()) {
+                tracing::warn!(offset, "stopping WBI main pagination on repeated cursor");
                 break;
             }
 
-            sleep_request_delay(request_delay).await;
-            page = Some(self.wbi_main_comment_page(bvid, oid, Some(offset)).await?);
+            sleep_request_delay(config.request_delay).await;
+            page = Some(
+                self.wbi_main_comment_page(config.bvid, config.oid, Some(offset))
+                    .await?,
+            );
         }
 
-        Ok(CommentBatch {
-            comments,
-            main_pages_scanned: pages_scanned,
-            reply_pages_scanned: 0,
-            next_cursor: next_cursor.map(|cursor| cursor.to_string()),
-        })
+        summary.next_cursor = next_cursor.map(|cursor| cursor.to_string());
+        Ok(summary)
     }
 
-    async fn collect_legacy_main_comments(
+    async fn stream_legacy_main_comments<F>(
         &self,
-        bvid: &str,
-        oid: u64,
+        config: MainCommentScanConfig<'_>,
         first_page: CommentPage,
-        max_pages: Option<usize>,
-        request_delay: Option<Duration>,
-    ) -> Result<CommentBatch> {
-        let mut comments = Vec::new();
-        let mut seen = HashSet::new();
+        seen: &mut HashSet<u64>,
+        roots: &mut Vec<(u64, u64)>,
+        on_comments: &mut F,
+    ) -> Result<CommentScanSummary>
+    where
+        F: FnMut(&[CommentRecord]) -> Result<()>,
+    {
+        let mut summary = CommentScanSummary::default();
         let mut seen_cursors = HashSet::new();
-        let mut pages_scanned = 0;
         let mut page = Some(first_page);
         let mut next_cursor = None;
 
         while let Some(current_page) = page {
-            pages_scanned += 1;
-            push_unique_comments(&mut comments, &mut seen, current_page.comments);
+            summary.main_pages_scanned += 1;
+            let page_is_end = current_page.is_end;
+            let page_comment_count = current_page.comments.len();
+            let unique_comments = unique_comments_from_page(seen, current_page.comments);
+            let unique_comment_count = unique_comments.len();
             next_cursor = current_page.next_cursor;
+            collect_reply_roots(&unique_comments, roots);
+            emit_comments(&unique_comments, on_comments)?;
+            summary.main_root_comments_scanned += unique_comment_count;
+            summary.comments_scanned += unique_comment_count;
+            tracing::info!(
+                page = summary.main_pages_scanned,
+                page_comments = page_comment_count,
+                unique_page_comments = unique_comment_count,
+                root_comments_scanned = summary.main_root_comments_scanned,
+                is_end = page_is_end,
+                next_cursor = ?next_cursor,
+                "collected legacy main comment page"
+            );
 
-            if reached_page_limit(pages_scanned, max_pages) {
+            if reached_page_limit(summary.main_pages_scanned, config.max_pages) {
+                break;
+            }
+            if page_is_end || page_comment_count == 0 {
+                next_cursor = None;
                 break;
             }
 
@@ -325,47 +443,61 @@ impl BiliClient {
                 break;
             }
             if !seen_cursors.insert(*next) {
+                tracing::warn!(next, "stopping legacy main pagination on repeated cursor");
                 break;
             }
 
-            sleep_request_delay(request_delay).await;
-            page = Some(self.legacy_main_comment_page(bvid, oid, *next).await?);
+            sleep_request_delay(config.request_delay).await;
+            page = Some(
+                self.legacy_main_comment_page(config.bvid, config.oid, *next)
+                    .await?,
+            );
         }
 
-        Ok(CommentBatch {
-            comments,
-            main_pages_scanned: pages_scanned,
-            reply_pages_scanned: 0,
-            next_cursor: next_cursor.map(|cursor| cursor.to_string()),
-        })
+        summary.next_cursor = next_cursor.map(|cursor| cursor.to_string());
+        Ok(summary)
     }
 
-    async fn secondary_comments(
+    async fn stream_secondary_comments<F>(
         &self,
-        bvid: &str,
-        oid: u64,
-        root: u64,
-        expected_count: u64,
-        max_reply_pages: Option<usize>,
-        request_delay: Option<Duration>,
-    ) -> Result<SecondaryCommentBatch> {
-        let mut comments = Vec::new();
+        config: SecondaryCommentScanConfig<'_>,
+        seen: &mut HashSet<u64>,
+        on_comments: &mut F,
+    ) -> Result<SecondaryCommentBatch>
+    where
+        F: FnMut(&[CommentRecord]) -> Result<()>,
+    {
+        let mut comments_scanned = 0;
         let mut pages_scanned = 0;
         let mut pn = 1;
 
         loop {
             pages_scanned += 1;
-            let page = self.secondary_comment_page(bvid, oid, root, pn).await?;
+            let page = self
+                .secondary_comment_page(config.bvid, config.oid, config.root, pn)
+                .await?;
             let page_count = page.comments.len() as u64;
-            comments.extend(page.comments);
+            let unique_comments = unique_comments_from_page(seen, page.comments);
+            let unique_comment_count = unique_comments.len();
+            emit_comments(&unique_comments, on_comments)?;
+            comments_scanned += unique_comment_count;
+            tracing::info!(
+                root = config.root,
+                page = pages_scanned,
+                page_comments = page_count,
+                unique_page_comments = unique_comment_count,
+                secondary_comments_scanned = comments_scanned,
+                expected_count = config.expected_count,
+                "collected secondary comment page"
+            );
 
-            if reached_page_limit(pages_scanned, max_reply_pages) {
+            if reached_page_limit(pages_scanned, config.max_pages) {
                 break;
             }
             if page_count == 0 {
                 break;
             }
-            if comments.len() as u64 >= expected_count {
+            if comments_scanned as u64 >= config.expected_count {
                 break;
             }
             if page_count < REPLY_PAGE_SIZE {
@@ -373,11 +505,11 @@ impl BiliClient {
             }
 
             pn += 1;
-            sleep_request_delay(request_delay).await;
+            sleep_request_delay(config.request_delay).await;
         }
 
         Ok(SecondaryCommentBatch {
-            comments,
+            comments_scanned,
             pages_scanned,
         })
     }
@@ -442,13 +574,20 @@ impl BiliClient {
 
 impl CommentPage {
     fn from_wbi_reply_data(bvid: &str, data: ReplyMainData) -> Self {
-        Self {
-            next_cursor: data
-                .cursor
+        let cursor = data.cursor;
+        let next_cursor = if cursor.is_end {
+            None
+        } else {
+            cursor
                 .pagination_reply
                 .and_then(|pagination| pagination.next_offset)
                 .filter(|offset| !offset.is_empty())
-                .map(CommentCursor::Wbi),
+                .map(CommentCursor::Wbi)
+        };
+
+        Self {
+            next_cursor,
+            is_end: cursor.is_end,
             comments: data
                 .replies
                 .into_iter()
@@ -458,12 +597,19 @@ impl CommentPage {
     }
 
     fn from_legacy_reply_data(bvid: &str, data: ReplyMainData) -> Self {
-        Self {
-            next_cursor: data
-                .cursor
+        let cursor = data.cursor;
+        let next_cursor = if cursor.is_end {
+            None
+        } else {
+            cursor
                 .next
                 .filter(|next| *next > 0)
-                .map(CommentCursor::Legacy),
+                .map(CommentCursor::Legacy)
+        };
+
+        Self {
+            next_cursor,
+            is_end: cursor.is_end,
             comments: data
                 .replies
                 .into_iter()
@@ -475,7 +621,7 @@ impl CommentPage {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct SecondaryCommentBatch {
-    comments: Vec<CommentRecord>,
+    comments_scanned: usize,
     pages_scanned: usize,
 }
 
@@ -505,16 +651,33 @@ impl std::fmt::Display for CommentCursor {
     }
 }
 
-fn push_unique_comments(
-    comments: &mut Vec<CommentRecord>,
+fn unique_comments_from_page(
     seen: &mut HashSet<u64>,
     page_comments: Vec<CommentRecord>,
-) {
-    for comment in page_comments {
-        if seen.insert(comment.rpid) {
-            comments.push(comment);
-        }
+) -> Vec<CommentRecord> {
+    page_comments
+        .into_iter()
+        .filter(|comment| seen.insert(comment.rpid))
+        .collect()
+}
+
+fn collect_reply_roots(comments: &[CommentRecord], roots: &mut Vec<(u64, u64)>) {
+    roots.extend(
+        comments
+            .iter()
+            .filter(|comment| comment.reply_count > 0)
+            .map(|comment| (comment.rpid, comment.reply_count)),
+    );
+}
+
+fn emit_comments<F>(comments: &[CommentRecord], on_comments: &mut F) -> Result<()>
+where
+    F: FnMut(&[CommentRecord]) -> Result<()>,
+{
+    if !comments.is_empty() {
+        on_comments(comments)?;
     }
+    Ok(())
 }
 
 fn reached_page_limit(pages_scanned: usize, max_pages: Option<usize>) -> bool {
@@ -821,6 +984,25 @@ mod tests {
         let count: ReplyCountData = serde_json::from_str(payload).expect("count JSON");
 
         assert_eq!(count.count, 4689);
+    }
+
+    #[test]
+    fn clears_legacy_cursor_when_api_marks_end() {
+        let payload = r#"
+        {
+          "cursor": {
+            "is_end": true,
+            "next": 1785
+          },
+          "replies": []
+        }
+        "#;
+        let data: ReplyMainData = serde_json::from_str(payload).expect("reply main JSON");
+        let page = CommentPage::from_legacy_reply_data("BV1xx411c7mD", data);
+
+        assert!(page.is_end);
+        assert_eq!(page.comments.len(), 0);
+        assert_eq!(page.next_cursor, None);
     }
 
     #[test]
