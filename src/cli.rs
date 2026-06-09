@@ -69,6 +69,10 @@ pub struct CommentsArgs {
     /// Output format. Use comma-separated values such as csv,jsonl.
     #[arg(long, value_enum, value_delimiter = ',', default_value = "csv")]
     pub format: Vec<OutputFormat>,
+
+    /// Limit main comment pages. Useful for smoke tests.
+    #[arg(long, value_name = "N")]
+    pub max_pages: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -98,16 +102,20 @@ async fn run_comments(args: CommentsArgs) -> Result<()> {
     let client = BiliClient::new(cookie_header)?;
 
     for bvid in bvids {
-        tracing::info!(bvid, "collecting first comment page");
+        tracing::info!(bvid, "collecting comments");
         let video = client.video_info(&bvid).await?;
-        let page = client.main_comment_page(&video.bvid, video.aid).await?;
-        let paths = write_comment_outputs(&args.output, &video.bvid, &page.comments, &args.format)?;
+        let batch = client
+            .main_comments(&video.bvid, video.aid, args.max_pages)
+            .await?;
+        let paths =
+            write_comment_outputs(&args.output, &video.bvid, &batch.comments, &args.format)?;
 
         println!(
-            "wrote {} comments for {} (next_offset: {})",
-            page.comments.len(),
+            "wrote {} comments for {} (pages_scanned: {}, next_cursor: {})",
+            batch.comments.len(),
             video.bvid,
-            page.next_offset.as_deref().unwrap_or("<none>")
+            batch.pages_scanned,
+            batch.next_cursor.as_deref().unwrap_or("<none>")
         );
         for path in paths {
             println!("output: {}", path.display());

@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use anyhow::Result;
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
 use super::client::{BiliClient, api_error_code};
@@ -9,9 +10,22 @@ const REPLY_MAIN_URL: &str = "https://api.bilibili.com/x/v2/reply/wbi/main";
 const REPLY_LEGACY_MAIN_URL: &str = "https://api.bilibili.com/x/v2/reply/main";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct CommentPage {
+pub struct CommentBatch {
     pub comments: Vec<CommentRecord>,
-    pub next_offset: Option<String>,
+    pub pages_scanned: usize,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct CommentPage {
+    comments: Vec<CommentRecord>,
+    next_cursor: Option<CommentCursor>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum CommentCursor {
+    Wbi(String),
+    Legacy(u64),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -50,7 +64,7 @@ pub struct CommentRecord {
 struct ReplyMainData {
     #[serde(default)]
     cursor: ReplyCursorData,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
     replies: Vec<ReplyData>,
 }
 
@@ -114,54 +128,164 @@ struct ReplyControlData {
 }
 
 impl BiliClient {
-    pub async fn main_comment_page(&self, bvid: &str, oid: u64) -> Result<CommentPage> {
-        match self.wbi_main_comment_page(bvid, oid).await {
-            Ok(page) => Ok(page),
+    pub async fn main_comments(
+        &self,
+        bvid: &str,
+        oid: u64,
+        max_pages: Option<usize>,
+    ) -> Result<CommentBatch> {
+        match self.wbi_main_comment_page(bvid, oid, None).await {
+            Ok(page) => {
+                self.collect_wbi_main_comments(bvid, oid, page, max_pages)
+                    .await
+            }
             Err(error) if api_error_code(&error) == Some(-101) => {
                 tracing::warn!(
                     "WBI comment endpoint requires login; falling back to legacy endpoint"
                 );
-                self.legacy_main_comment_page(bvid, oid).await
+                let page = self.legacy_main_comment_page(bvid, oid, 0).await?;
+                self.collect_legacy_main_comments(bvid, oid, page, max_pages)
+                    .await
             }
             Err(error) => Err(error),
         }
     }
 
-    async fn wbi_main_comment_page(&self, bvid: &str, oid: u64) -> Result<CommentPage> {
+    async fn collect_wbi_main_comments(
+        &self,
+        bvid: &str,
+        oid: u64,
+        first_page: CommentPage,
+        max_pages: Option<usize>,
+    ) -> Result<CommentBatch> {
+        let mut comments = Vec::new();
+        let mut seen = HashSet::new();
+        let mut seen_cursors = HashSet::new();
+        let mut pages_scanned = 0;
+        let mut page = Some(first_page);
+        let mut next_cursor = None;
+
+        while let Some(current_page) = page {
+            pages_scanned += 1;
+            push_unique_comments(&mut comments, &mut seen, current_page.comments);
+            next_cursor = current_page.next_cursor;
+
+            if reached_page_limit(pages_scanned, max_pages) {
+                break;
+            }
+
+            let Some(CommentCursor::Wbi(offset)) = &next_cursor else {
+                break;
+            };
+            if offset.is_empty() {
+                break;
+            }
+            if !seen_cursors.insert(offset.clone()) {
+                break;
+            }
+
+            page = Some(self.wbi_main_comment_page(bvid, oid, Some(offset)).await?);
+        }
+
+        Ok(CommentBatch {
+            comments,
+            pages_scanned,
+            next_cursor: next_cursor.map(|cursor| cursor.to_string()),
+        })
+    }
+
+    async fn collect_legacy_main_comments(
+        &self,
+        bvid: &str,
+        oid: u64,
+        first_page: CommentPage,
+        max_pages: Option<usize>,
+    ) -> Result<CommentBatch> {
+        let mut comments = Vec::new();
+        let mut seen = HashSet::new();
+        let mut seen_cursors = HashSet::new();
+        let mut pages_scanned = 0;
+        let mut page = Some(first_page);
+        let mut next_cursor = None;
+
+        while let Some(current_page) = page {
+            pages_scanned += 1;
+            push_unique_comments(&mut comments, &mut seen, current_page.comments);
+            next_cursor = current_page.next_cursor;
+
+            if reached_page_limit(pages_scanned, max_pages) {
+                break;
+            }
+
+            let Some(CommentCursor::Legacy(next)) = &next_cursor else {
+                break;
+            };
+            if *next == 0 {
+                break;
+            }
+            if !seen_cursors.insert(*next) {
+                break;
+            }
+
+            page = Some(self.legacy_main_comment_page(bvid, oid, *next).await?);
+        }
+
+        Ok(CommentBatch {
+            comments,
+            pages_scanned,
+            next_cursor: next_cursor.map(|cursor| cursor.to_string()),
+        })
+    }
+
+    async fn wbi_main_comment_page(
+        &self,
+        bvid: &str,
+        oid: u64,
+        offset: Option<&str>,
+    ) -> Result<CommentPage> {
         let signer = self.wbi_signer().await?;
         let mut params = BTreeMap::new();
         params.insert("mode".to_string(), "3".to_string());
         params.insert("oid".to_string(), oid.to_string());
-        params.insert("pagination_str".to_string(), r#"{"offset":""}"#.to_string());
+        params.insert(
+            "pagination_str".to_string(),
+            serde_json::json!({ "offset": offset.unwrap_or("") }).to_string(),
+        );
         params.insert("plat".to_string(), "1".to_string());
         params.insert("type".to_string(), "1".to_string());
         params.insert("web_location".to_string(), "1315875".to_string());
 
         let signed_params = signer.sign(params)?;
         let data: ReplyMainData = self.get_api(REPLY_MAIN_URL, &signed_params).await?;
-        Ok(CommentPage::from_reply_data(bvid, data))
+        Ok(CommentPage::from_wbi_reply_data(bvid, data))
     }
 
-    async fn legacy_main_comment_page(&self, bvid: &str, oid: u64) -> Result<CommentPage> {
+    async fn legacy_main_comment_page(
+        &self,
+        bvid: &str,
+        oid: u64,
+        next: u64,
+    ) -> Result<CommentPage> {
         let query = [
             ("mode", "3".to_string()),
-            ("next", "0".to_string()),
+            ("next", next.to_string()),
             ("oid", oid.to_string()),
             ("type", "1".to_string()),
         ];
         let data: ReplyMainData = self.get_api(REPLY_LEGACY_MAIN_URL, &query).await?;
-        Ok(CommentPage::from_reply_data(bvid, data))
+        Ok(CommentPage::from_legacy_reply_data(bvid, data))
     }
 }
 
 impl CommentPage {
-    fn from_reply_data(bvid: &str, data: ReplyMainData) -> Self {
+    fn from_wbi_reply_data(bvid: &str, data: ReplyMainData) -> Self {
         Self {
-            next_offset: data
+            next_cursor: data
                 .cursor
                 .pagination_reply
                 .and_then(|pagination| pagination.next_offset)
-                .or_else(|| data.cursor.next.map(|next| next.to_string())),
+                .filter(|offset| !offset.is_empty())
+                .map(CommentCursor::Wbi),
             comments: data
                 .replies
                 .into_iter()
@@ -169,6 +293,54 @@ impl CommentPage {
                 .collect(),
         }
     }
+
+    fn from_legacy_reply_data(bvid: &str, data: ReplyMainData) -> Self {
+        Self {
+            next_cursor: data
+                .cursor
+                .next
+                .filter(|next| *next > 0)
+                .map(CommentCursor::Legacy),
+            comments: data
+                .replies
+                .into_iter()
+                .map(|reply| CommentRecord::from_reply(bvid, reply))
+                .collect(),
+        }
+    }
+}
+
+impl std::fmt::Display for CommentCursor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Wbi(offset) => write!(formatter, "wbi:{offset}"),
+            Self::Legacy(next) => write!(formatter, "legacy:{next}"),
+        }
+    }
+}
+
+fn push_unique_comments(
+    comments: &mut Vec<CommentRecord>,
+    seen: &mut HashSet<u64>,
+    page_comments: Vec<CommentRecord>,
+) {
+    for comment in page_comments {
+        if seen.insert(comment.rpid) {
+            comments.push(comment);
+        }
+    }
+}
+
+fn reached_page_limit(pages_scanned: usize, max_pages: Option<usize>) -> bool {
+    max_pages.is_some_and(|limit| pages_scanned >= limit)
+}
+
+fn deserialize_null_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl CommentRecord {
