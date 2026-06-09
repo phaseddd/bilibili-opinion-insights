@@ -1,5 +1,6 @@
-use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::collections::HashSet;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
@@ -118,8 +119,12 @@ async fn run_comments(args: CommentsArgs) -> Result<()> {
                     outcome.reply_pages_scanned,
                     outcome.next_cursor.as_deref().unwrap_or("<none>")
                 );
-                for path in outcome.paths {
-                    println!("output: {}", path.display());
+                for output in outcome.outputs {
+                    println!(
+                        "output: {} (appended: {})",
+                        output.path.display(),
+                        output.appended_count
+                    );
                 }
             }
             Err(error) => {
@@ -147,7 +152,7 @@ struct VideoCommentOutcome {
     main_pages_scanned: usize,
     reply_pages_scanned: usize,
     next_cursor: Option<String>,
-    paths: Vec<PathBuf>,
+    outputs: Vec<OutputWriteResult>,
 }
 
 #[derive(Debug, Serialize)]
@@ -168,7 +173,7 @@ async fn collect_one_video_comments(
     let batch = client
         .main_comments(&video.bvid, video.aid, args.max_pages, args.max_reply_pages)
         .await?;
-    let paths = write_comment_outputs(&args.output, &video.bvid, &batch.comments, &args.format)?;
+    let outputs = write_comment_outputs(&args.output, &video.bvid, &batch.comments, &args.format)?;
 
     Ok(VideoCommentOutcome {
         bvid: video.bvid,
@@ -176,7 +181,7 @@ async fn collect_one_video_comments(
         main_pages_scanned: batch.main_pages_scanned,
         reply_pages_scanned: batch.reply_pages_scanned,
         next_cursor: batch.next_cursor,
-        paths,
+        outputs,
     })
 }
 
@@ -251,31 +256,103 @@ fn write_comment_outputs(
     bvid: &str,
     comments: &[CommentRecord],
     formats: &[OutputFormat],
-) -> Result<Vec<PathBuf>> {
+) -> Result<Vec<OutputWriteResult>> {
     let video_dir = output_root.join(bvid);
     fs::create_dir_all(&video_dir)?;
 
-    let mut paths = Vec::new();
+    let mut outputs = Vec::new();
     for format in formats {
         match format {
             OutputFormat::Csv => {
                 let path = video_dir.join("comments.csv");
-                write_comments_csv(&path, comments)?;
-                paths.push(path);
+                let existing = read_existing_csv_rpids(&path)?;
+                let comments = comments_missing_from(comments, &existing);
+                let appended_count = comments.len();
+                write_comments_csv(&path, &comments)?;
+                outputs.push(OutputWriteResult {
+                    path,
+                    appended_count,
+                });
             }
             OutputFormat::Jsonl => {
                 let path = video_dir.join("comments.jsonl");
-                write_comments_jsonl(&path, comments)?;
-                paths.push(path);
+                let existing = read_existing_jsonl_rpids(&path)?;
+                let comments = comments_missing_from(comments, &existing);
+                let appended_count = comments.len();
+                write_comments_jsonl(&path, &comments)?;
+                outputs.push(OutputWriteResult {
+                    path,
+                    appended_count,
+                });
             }
         }
     }
 
-    Ok(paths)
+    Ok(outputs)
+}
+
+struct OutputWriteResult {
+    path: PathBuf,
+    appended_count: usize,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ExistingCommentRow {
+    #[serde(rename = "Rpid")]
+    rpid: u64,
+}
+
+fn comments_missing_from(
+    comments: &[CommentRecord],
+    existing: &HashSet<u64>,
+) -> Vec<CommentRecord> {
+    comments
+        .iter()
+        .filter(|comment| !existing.contains(&comment.rpid))
+        .cloned()
+        .collect()
+}
+
+fn read_existing_csv_rpids(path: &Path) -> Result<HashSet<u64>> {
+    if !path.exists() {
+        return Ok(HashSet::new());
+    }
+
+    let mut reader = csv::Reader::from_path(path)?;
+    let mut rpids = HashSet::new();
+    for record in reader.deserialize::<ExistingCommentRow>() {
+        rpids.insert(record?.rpid);
+    }
+    Ok(rpids)
+}
+
+fn read_existing_jsonl_rpids(path: &Path) -> Result<HashSet<u64>> {
+    if !path.exists() {
+        return Ok(HashSet::new());
+    }
+
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut rpids = HashSet::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(&line)?;
+        if let Some(rpid) = value.get("Rpid").and_then(serde_json::Value::as_u64) {
+            rpids.insert(rpid);
+        }
+    }
+    Ok(rpids)
 }
 
 fn write_comments_csv(path: &Path, comments: &[CommentRecord]) -> Result<()> {
-    let mut writer = csv::Writer::from_path(path)?;
+    let append_without_header = path.exists() && path.metadata()?.len() > 0;
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    let mut writer = csv::WriterBuilder::new()
+        .has_headers(!append_without_header)
+        .from_writer(file);
     for comment in comments {
         writer.serialize(comment)?;
     }
@@ -284,7 +361,7 @@ fn write_comments_csv(path: &Path, comments: &[CommentRecord]) -> Result<()> {
 }
 
 fn write_comments_jsonl(path: &Path, comments: &[CommentRecord]) -> Result<()> {
-    let file = File::create(path)?;
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
     let mut writer = BufWriter::new(file);
     for comment in comments {
         serde_json::to_writer(&mut writer, comment)?;
@@ -374,5 +451,75 @@ mod tests {
         fs::remove_file(path).expect("remove input");
 
         assert_eq!(bvids, ["BV_positional", "BV_input_1", "BV_input_2"]);
+    }
+
+    #[test]
+    fn appends_only_new_comments_to_existing_outputs() {
+        let output_root =
+            std::env::temp_dir().join(format!("bili-opinion-output-{}", std::process::id()));
+        if output_root.exists() {
+            fs::remove_dir_all(&output_root).expect("remove old output");
+        }
+
+        let comments = vec![sample_comment(1), sample_comment(2)];
+        let first = write_comment_outputs(
+            &output_root,
+            "BV1xx411c7mD",
+            &comments,
+            &[OutputFormat::Csv, OutputFormat::Jsonl],
+        )
+        .expect("first write");
+        let second = write_comment_outputs(
+            &output_root,
+            "BV1xx411c7mD",
+            &comments,
+            &[OutputFormat::Csv, OutputFormat::Jsonl],
+        )
+        .expect("second write");
+
+        assert_eq!(
+            first
+                .iter()
+                .map(|output| output.appended_count)
+                .collect::<Vec<_>>(),
+            [2, 2]
+        );
+        assert_eq!(
+            second
+                .iter()
+                .map(|output| output.appended_count)
+                .collect::<Vec<_>>(),
+            [0, 0]
+        );
+
+        let csv =
+            fs::read_to_string(output_root.join("BV1xx411c7mD").join("comments.csv")).expect("csv");
+        let jsonl = fs::read_to_string(output_root.join("BV1xx411c7mD").join("comments.jsonl"))
+            .expect("jsonl");
+
+        assert_eq!(csv.lines().count(), 3);
+        assert_eq!(jsonl.lines().count(), 2);
+
+        fs::remove_dir_all(output_root).expect("remove output");
+    }
+
+    fn sample_comment(rpid: u64) -> CommentRecord {
+        CommentRecord {
+            uname: "tester".to_string(),
+            sex: "保密".to_string(),
+            content: format!("comment {rpid}"),
+            rpid,
+            oid: 100,
+            bvid: "BV1xx411c7mD".to_string(),
+            mid: 200,
+            parent: 0,
+            fans_grade: false,
+            ctime: 1710000000,
+            like: 0,
+            following: false,
+            current_level: 1,
+            location: String::new(),
+            reply_count: 0,
+        }
     }
 }
