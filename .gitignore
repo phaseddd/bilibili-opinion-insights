@@ -24,6 +24,8 @@ coverage.out
 /.claude/
 /.obsidian/
 /doc/
+/AGENTS.md
+/CLAUDE.md
 
 # Environment and editor noise
 .env
