@@ -41,6 +41,24 @@ pub struct CommentRecord {
     pub sex: String,
     #[serde(rename = "Content")]
     pub content: String,
+    #[serde(rename = "Pictures")]
+    pub pictures: String,
+    #[serde(rename = "Picture_count")]
+    pub picture_count: usize,
+    #[serde(rename = "Emotes")]
+    pub emotes: String,
+    #[serde(rename = "Emote_urls")]
+    pub emote_urls: String,
+    #[serde(rename = "At_users")]
+    pub at_users: String,
+    #[serde(rename = "Jump_url_keys")]
+    pub jump_url_keys: String,
+    #[serde(rename = "Jump_urls")]
+    pub jump_urls: String,
+    #[serde(rename = "Video_time_seconds")]
+    pub video_time_seconds: String,
+    #[serde(rename = "Video_time_links")]
+    pub video_time_links: String,
     #[serde(rename = "Rpid")]
     pub rpid: u64,
     #[serde(rename = "Oid")]
@@ -108,6 +126,34 @@ struct ReplyData {
 struct ReplyContentData {
     #[serde(default)]
     message: String,
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
+    pictures: Vec<ReplyPictureData>,
+    #[serde(default)]
+    emote: BTreeMap<String, ReplyEmoteData>,
+    #[serde(default)]
+    at_name_to_mid: BTreeMap<String, u64>,
+    #[serde(default)]
+    jump_url: BTreeMap<String, ReplyJumpUrlData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplyPictureData {
+    #[serde(default)]
+    img_src: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplyEmoteData {
+    #[serde(default)]
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplyJumpUrlData {
+    #[serde(default)]
+    pc_url: String,
+    #[serde(default)]
+    app_url_schema: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -493,10 +539,21 @@ where
 
 impl CommentRecord {
     fn from_reply(bvid: &str, reply: ReplyData) -> Self {
+        let rich_content = CommentRichContent::from_reply_content(bvid, &reply.content);
+
         Self {
             uname: reply.member.uname,
             sex: reply.member.sex,
             content: reply.content.message,
+            pictures: rich_content.pictures,
+            picture_count: rich_content.picture_count,
+            emotes: rich_content.emotes,
+            emote_urls: rich_content.emote_urls,
+            at_users: rich_content.at_users,
+            jump_url_keys: rich_content.jump_url_keys,
+            jump_urls: rich_content.jump_urls,
+            video_time_seconds: rich_content.video_time_seconds,
+            video_time_links: rich_content.video_time_links,
             rpid: reply.rpid,
             oid: reply.oid,
             bvid: bvid.to_string(),
@@ -511,6 +568,156 @@ impl CommentRecord {
             reply_count: reply.rcount,
         }
     }
+}
+
+struct CommentRichContent {
+    pictures: String,
+    picture_count: usize,
+    emotes: String,
+    emote_urls: String,
+    at_users: String,
+    jump_url_keys: String,
+    jump_urls: String,
+    video_time_seconds: String,
+    video_time_links: String,
+}
+
+impl CommentRichContent {
+    fn from_reply_content(bvid: &str, content: &ReplyContentData) -> Self {
+        let picture_urls = content
+            .pictures
+            .iter()
+            .filter_map(|picture| non_empty_string(&picture.img_src))
+            .collect::<Vec<_>>();
+        let emote_texts = content
+            .emote
+            .keys()
+            .filter_map(|text| non_empty_string(text))
+            .collect::<Vec<_>>();
+        let emote_urls = content
+            .emote
+            .values()
+            .filter_map(|emote| non_empty_string(&emote.url))
+            .collect::<Vec<_>>();
+        let at_users = content
+            .at_name_to_mid
+            .iter()
+            .map(|(name, mid)| format!("{name}:{mid}"))
+            .collect::<Vec<_>>();
+        let jump_url_keys = content
+            .jump_url
+            .keys()
+            .filter_map(|key| non_empty_string(key))
+            .collect::<Vec<_>>();
+        let jump_urls = content
+            .jump_url
+            .values()
+            .filter_map(jump_url_value)
+            .collect::<Vec<_>>();
+        let video_times = detect_video_time_seconds(&content.message);
+        let video_time_seconds = video_times
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let video_time_links = video_times
+            .iter()
+            .map(|seconds| format!("https://www.bilibili.com/video/{bvid}?t={seconds}"))
+            .collect::<Vec<_>>();
+
+        Self {
+            picture_count: picture_urls.len(),
+            pictures: join_field_values(picture_urls),
+            emotes: join_field_values(emote_texts),
+            emote_urls: join_field_values(emote_urls),
+            at_users: join_field_values(at_users),
+            jump_url_keys: join_field_values(jump_url_keys),
+            jump_urls: join_field_values(jump_urls),
+            video_time_seconds: join_field_values(video_time_seconds),
+            video_time_links: join_field_values(video_time_links),
+        }
+    }
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn jump_url_value(jump: &ReplyJumpUrlData) -> Option<String> {
+    non_empty_string(&jump.pc_url)
+        .map(normalize_protocol_relative_url)
+        .or_else(|| non_empty_string(&jump.app_url_schema))
+}
+
+fn normalize_protocol_relative_url(url: String) -> String {
+    if url.starts_with("//") {
+        format!("https:{url}")
+    } else {
+        url
+    }
+}
+
+fn join_field_values(values: Vec<String>) -> String {
+    values.join(";")
+}
+
+fn detect_video_time_seconds(message: &str) -> Vec<u64> {
+    let mut values = Vec::new();
+    let mut candidate = String::new();
+
+    for ch in message.chars() {
+        if ch.is_ascii_digit() || ch == ':' {
+            candidate.push(ch);
+        } else {
+            push_video_time_candidate(&mut values, &candidate);
+            candidate.clear();
+        }
+    }
+    push_video_time_candidate(&mut values, &candidate);
+
+    values
+}
+
+fn push_video_time_candidate(values: &mut Vec<u64>, candidate: &str) {
+    if let Some(seconds) = parse_video_time_candidate(candidate)
+        && !values.contains(&seconds)
+    {
+        values.push(seconds);
+    }
+}
+
+fn parse_video_time_candidate(candidate: &str) -> Option<u64> {
+    if candidate.is_empty() || candidate.starts_with(':') || candidate.ends_with(':') {
+        return None;
+    }
+
+    let parts = candidate.split(':').collect::<Vec<_>>();
+    match parts.as_slice() {
+        [minutes, seconds] => {
+            let minutes = minutes.parse::<u64>().ok()?;
+            let seconds = parse_clock_part(seconds)?;
+            Some(minutes * 60 + seconds)
+        }
+        [hours, minutes, seconds] => {
+            let hours = hours.parse::<u64>().ok()?;
+            let minutes = parse_clock_part(minutes)?;
+            let seconds = parse_clock_part(seconds)?;
+            Some(hours * 3600 + minutes * 60 + seconds)
+        }
+        _ => None,
+    }
+}
+
+fn parse_clock_part(value: &str) -> Option<u64> {
+    if value.len() != 2 {
+        return None;
+    }
+    let value = value.parse::<u64>().ok()?;
+    if value < 60 { Some(value) } else { None }
 }
 
 #[cfg(test)]
@@ -529,7 +736,26 @@ mod tests {
           "ctime": 1710000000,
           "like": 42,
           "content": {
-            "message": "hello"
+            "message": "1:05:30 hello [吃瓜]",
+            "pictures": [
+              {
+                "img_src": "http://i0.hdslb.com/bfs/new_dyn/sample.jpg"
+              }
+            ],
+            "emote": {
+              "[吃瓜]": {
+                "url": "https://i0.hdslb.com/bfs/emote/sample.png"
+              }
+            },
+            "at_name_to_mid": {
+              "target": 4004
+            },
+            "jump_url": {
+              "keyword": {
+                "pc_url": "//search.bilibili.com/all?keyword=keyword",
+                "app_url_schema": "bilibili://search?keyword=keyword"
+              }
+            }
           },
           "member": {
             "uname": "tester",
@@ -553,7 +779,28 @@ mod tests {
 
         assert_eq!(record.uname, "tester");
         assert_eq!(record.sex, "保密");
-        assert_eq!(record.content, "hello");
+        assert_eq!(record.content, "1:05:30 hello [吃瓜]");
+        assert_eq!(
+            record.pictures,
+            "http://i0.hdslb.com/bfs/new_dyn/sample.jpg"
+        );
+        assert_eq!(record.picture_count, 1);
+        assert_eq!(record.emotes, "[吃瓜]");
+        assert_eq!(
+            record.emote_urls,
+            "https://i0.hdslb.com/bfs/emote/sample.png"
+        );
+        assert_eq!(record.at_users, "target:4004");
+        assert_eq!(record.jump_url_keys, "keyword");
+        assert_eq!(
+            record.jump_urls,
+            "https://search.bilibili.com/all?keyword=keyword"
+        );
+        assert_eq!(record.video_time_seconds, "3930");
+        assert_eq!(
+            record.video_time_links,
+            "https://www.bilibili.com/video/BV1xx411c7mD?t=3930"
+        );
         assert_eq!(record.rpid, 1001);
         assert_eq!(record.oid, 2002);
         assert_eq!(record.bvid, "BV1xx411c7mD");
@@ -574,5 +821,14 @@ mod tests {
         let count: ReplyCountData = serde_json::from_str(payload).expect("count JSON");
 
         assert_eq!(count.count, 4689);
+    }
+
+    #[test]
+    fn detects_video_time_candidates() {
+        assert_eq!(detect_video_time_seconds("1:05:30 正题"), [3930]);
+        assert_eq!(detect_video_time_seconds("12:47 看这里"), [767]);
+        assert_eq!(detect_video_time_seconds("2:45:48 and 05:30"), [9948, 330]);
+        assert!(detect_video_time_seconds("2026-06-09").is_empty());
+        assert!(detect_video_time_seconds("99:99").is_empty());
     }
 }
