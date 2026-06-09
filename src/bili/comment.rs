@@ -8,11 +8,14 @@ use super::client::{BiliClient, api_error_code};
 
 const REPLY_MAIN_URL: &str = "https://api.bilibili.com/x/v2/reply/wbi/main";
 const REPLY_LEGACY_MAIN_URL: &str = "https://api.bilibili.com/x/v2/reply/main";
+const REPLY_DETAIL_URL: &str = "https://api.bilibili.com/x/v2/reply/reply";
+const REPLY_PAGE_SIZE: u64 = 20;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct CommentBatch {
     pub comments: Vec<CommentRecord>,
-    pub pages_scanned: usize,
+    pub main_pages_scanned: usize,
+    pub reply_pages_scanned: usize,
     pub next_cursor: Option<String>,
 }
 
@@ -58,6 +61,8 @@ pub struct CommentRecord {
     pub current_level: u64,
     #[serde(rename = "Location")]
     pub location: String,
+    #[serde(skip)]
+    pub reply_count: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +92,8 @@ struct ReplyData {
     oid: u64,
     mid: u64,
     parent: u64,
+    #[serde(default)]
+    rcount: u64,
     ctime: u64,
     like: u64,
     content: ReplyContentData,
@@ -133,8 +140,9 @@ impl BiliClient {
         bvid: &str,
         oid: u64,
         max_pages: Option<usize>,
+        max_reply_pages: Option<usize>,
     ) -> Result<CommentBatch> {
-        match self.wbi_main_comment_page(bvid, oid, None).await {
+        let mut batch = match self.wbi_main_comment_page(bvid, oid, None).await {
             Ok(page) => {
                 self.collect_wbi_main_comments(bvid, oid, page, max_pages)
                     .await
@@ -148,7 +156,29 @@ impl BiliClient {
                     .await
             }
             Err(error) => Err(error),
+        }?;
+
+        let mut seen = batch
+            .comments
+            .iter()
+            .map(|comment| comment.rpid)
+            .collect::<HashSet<_>>();
+        let roots = batch
+            .comments
+            .iter()
+            .filter(|comment| comment.reply_count > 0)
+            .map(|comment| (comment.rpid, comment.reply_count))
+            .collect::<Vec<_>>();
+
+        for (root, expected_count) in roots {
+            let reply_batch = self
+                .secondary_comments(bvid, oid, root, expected_count, max_reply_pages)
+                .await?;
+            batch.reply_pages_scanned += reply_batch.pages_scanned;
+            push_unique_comments(&mut batch.comments, &mut seen, reply_batch.comments);
         }
+
+        Ok(batch)
     }
 
     async fn collect_wbi_main_comments(
@@ -189,7 +219,8 @@ impl BiliClient {
 
         Ok(CommentBatch {
             comments,
-            pages_scanned,
+            main_pages_scanned: pages_scanned,
+            reply_pages_scanned: 0,
             next_cursor: next_cursor.map(|cursor| cursor.to_string()),
         })
     }
@@ -232,9 +263,68 @@ impl BiliClient {
 
         Ok(CommentBatch {
             comments,
-            pages_scanned,
+            main_pages_scanned: pages_scanned,
+            reply_pages_scanned: 0,
             next_cursor: next_cursor.map(|cursor| cursor.to_string()),
         })
+    }
+
+    async fn secondary_comments(
+        &self,
+        bvid: &str,
+        oid: u64,
+        root: u64,
+        expected_count: u64,
+        max_reply_pages: Option<usize>,
+    ) -> Result<SecondaryCommentBatch> {
+        let mut comments = Vec::new();
+        let mut pages_scanned = 0;
+        let mut pn = 1;
+
+        loop {
+            pages_scanned += 1;
+            let page = self.secondary_comment_page(bvid, oid, root, pn).await?;
+            let page_count = page.comments.len() as u64;
+            comments.extend(page.comments);
+
+            if reached_page_limit(pages_scanned, max_reply_pages) {
+                break;
+            }
+            if page_count == 0 {
+                break;
+            }
+            if comments.len() as u64 >= expected_count {
+                break;
+            }
+            if page_count < REPLY_PAGE_SIZE {
+                break;
+            }
+
+            pn += 1;
+        }
+
+        Ok(SecondaryCommentBatch {
+            comments,
+            pages_scanned,
+        })
+    }
+
+    async fn secondary_comment_page(
+        &self,
+        bvid: &str,
+        oid: u64,
+        root: u64,
+        pn: u64,
+    ) -> Result<SecondaryCommentPage> {
+        let query = [
+            ("oid", oid.to_string()),
+            ("pn", pn.to_string()),
+            ("ps", REPLY_PAGE_SIZE.to_string()),
+            ("root", root.to_string()),
+            ("type", "1".to_string()),
+        ];
+        let data: ReplyMainData = self.get_api(REPLY_DETAIL_URL, &query).await?;
+        Ok(SecondaryCommentPage::from_reply_data(bvid, data))
     }
 
     async fn wbi_main_comment_page(
@@ -310,6 +400,29 @@ impl CommentPage {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct SecondaryCommentBatch {
+    comments: Vec<CommentRecord>,
+    pages_scanned: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct SecondaryCommentPage {
+    comments: Vec<CommentRecord>,
+}
+
+impl SecondaryCommentPage {
+    fn from_reply_data(bvid: &str, data: ReplyMainData) -> Self {
+        Self {
+            comments: data
+                .replies
+                .into_iter()
+                .map(|reply| CommentRecord::from_reply(bvid, reply))
+                .collect(),
+        }
+    }
+}
+
 impl std::fmt::Display for CommentCursor {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -360,6 +473,7 @@ impl CommentRecord {
             following: reply.member.following != 0,
             current_level: reply.member.level_info.current_level,
             location: reply.reply_control.location,
+            reply_count: reply.rcount,
         }
     }
 }
@@ -376,6 +490,7 @@ mod tests {
           "oid": 2002,
           "mid": 3003,
           "parent": 0,
+          "rcount": 2,
           "ctime": 1710000000,
           "like": 42,
           "content": {
@@ -415,5 +530,6 @@ mod tests {
         assert!(record.following);
         assert_eq!(record.current_level, 6);
         assert_eq!(record.location, "IP属地：上海");
+        assert_eq!(record.reply_count, 2);
     }
 }

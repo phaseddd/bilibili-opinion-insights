@@ -73,6 +73,10 @@ pub struct CommentsArgs {
     /// Limit main comment pages. Useful for smoke tests.
     #[arg(long, value_name = "N")]
     pub max_pages: Option<usize>,
+
+    /// Limit secondary comment pages per root comment. Useful for smoke tests.
+    #[arg(long, value_name = "N")]
+    pub max_reply_pages: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -105,16 +109,17 @@ async fn run_comments(args: CommentsArgs) -> Result<()> {
         tracing::info!(bvid, "collecting comments");
         let video = client.video_info(&bvid).await?;
         let batch = client
-            .main_comments(&video.bvid, video.aid, args.max_pages)
+            .main_comments(&video.bvid, video.aid, args.max_pages, args.max_reply_pages)
             .await?;
         let paths =
             write_comment_outputs(&args.output, &video.bvid, &batch.comments, &args.format)?;
 
         println!(
-            "wrote {} comments for {} (pages_scanned: {}, next_cursor: {})",
+            "wrote {} comments for {} (main_pages: {}, reply_pages: {}, next_cursor: {})",
             batch.comments.len(),
             video.bvid,
-            batch.pages_scanned,
+            batch.main_pages_scanned,
+            batch.reply_pages_scanned,
             batch.next_cursor.as_deref().unwrap_or("<none>")
         );
         for path in paths {
