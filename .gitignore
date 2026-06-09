@@ -14,9 +14,16 @@ coverage.out
 # Build and cache output
 /build/
 /dist/
+/output/
 /.cache/
 /tmp/
 /temp/
+
+# Local collection credentials and config
+/config/
+cookie.txt
+cookies.txt
+sessdata.txt
 
 # Local tool folders
 /.agents/
