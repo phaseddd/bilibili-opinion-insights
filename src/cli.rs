@@ -2,12 +2,13 @@ use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
+use crate::bili::auth::{QrLoginStatus, render_terminal_qr};
 use crate::bili::client::BiliClient;
 use crate::bili::comment::CommentRecord;
 use crate::bili::danmaku::{DanmakuRecord, DanmakuSegmentContext, segment_count};
@@ -29,6 +30,9 @@ pub enum Commands {
     /// Check whether the current Bilibili credentials are recognized.
     Auth(AuthArgs),
 
+    /// Log in to Bilibili by scanning a QR code.
+    Login(LoginArgs),
+
     /// Fetch basic metadata for a Bilibili video.
     Video(VideoArgs),
 
@@ -48,6 +52,25 @@ pub struct AuthArgs {
     /// Use a SESSDATA value directly. Treat this as a secret.
     #[arg(long, value_name = "VALUE")]
     pub sessdata: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct LoginArgs {
+    /// Save the returned Cookie header to this local file.
+    #[arg(
+        long,
+        value_name = "FILE",
+        default_value = "config/bilibili-cookie.txt"
+    )]
+    pub output_cookie: PathBuf,
+
+    /// Poll interval while waiting for QR scan confirmation.
+    #[arg(long, value_name = "SECONDS", default_value_t = 3)]
+    pub poll_interval_seconds: u64,
+
+    /// Stop waiting after this many seconds.
+    #[arg(long, value_name = "SECONDS", default_value_t = 180)]
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Args)]
@@ -144,10 +167,50 @@ pub enum OutputFormat {
 pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Auth(args) => run_auth(args).await,
+        Commands::Login(args) => run_login(args).await,
         Commands::Video(args) => run_video(args).await,
         Commands::Comments(args) => run_comments(args).await,
         Commands::Danmaku(args) => run_danmaku(args).await,
     }
+}
+
+async fn run_login(args: LoginArgs) -> Result<()> {
+    let client = BiliClient::new(None)?;
+    let session = client.generate_qr_login().await?;
+
+    println!("login_url: {}", session.url);
+    println!("{}", render_terminal_qr(&session.url)?);
+    println!("status: waiting_for_scan");
+
+    let started = Instant::now();
+    let poll_interval = Duration::from_secs(args.poll_interval_seconds.max(1));
+    let timeout = Duration::from_secs(args.timeout_seconds.max(1));
+    let mut last_status = String::from("waiting_for_scan");
+
+    loop {
+        if started.elapsed() >= timeout {
+            bail!("QR login timed out");
+        }
+
+        tokio::time::sleep(poll_interval).await;
+        match client.poll_qr_login(&session.qrcode_key).await? {
+            QrLoginStatus::WaitingForScan => {
+                print_login_status_once(&mut last_status, "waiting_for_scan");
+            }
+            QrLoginStatus::WaitingForConfirm => {
+                print_login_status_once(&mut last_status, "waiting_for_confirm");
+            }
+            QrLoginStatus::Expired => bail!("QR login expired"),
+            QrLoginStatus::Success { cookie_header } => {
+                save_cookie_header(&args.output_cookie, &cookie_header)?;
+                println!("status: logged_in");
+                println!("cookie_saved: {}", args.output_cookie.display());
+                break;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 async fn run_auth(args: AuthArgs) -> Result<()> {
@@ -166,6 +229,25 @@ async fn run_auth(args: AuthArgs) -> Result<()> {
     println!("uname: {}", login.uname.as_deref().unwrap_or("<none>"));
     println!("vip_status: {}", login.vip_status);
 
+    Ok(())
+}
+
+fn print_login_status_once(last_status: &mut String, status: &str) {
+    if last_status != status {
+        println!("status: {status}");
+        last_status.clear();
+        last_status.push_str(status);
+    }
+}
+
+fn save_cookie_header(path: &Path, cookie_header: &str) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+
+    fs::write(path, cookie_header)?;
     Ok(())
 }
 
@@ -644,6 +726,25 @@ mod tests {
 
         assert!(args.cookie.is_none());
         assert_eq!(args.sessdata.as_deref(), Some("sample"));
+    }
+
+    #[test]
+    fn parses_login_command() {
+        let cli = Cli::parse_from([
+            "bili-opinion",
+            "login",
+            "--output-cookie",
+            "config/test-cookie.txt",
+            "--timeout-seconds",
+            "5",
+        ]);
+
+        let Commands::Login(args) = cli.command else {
+            panic!("expected login command");
+        };
+
+        assert_eq!(args.output_cookie, PathBuf::from("config/test-cookie.txt"));
+        assert_eq!(args.timeout_seconds, 5);
     }
 
     #[test]

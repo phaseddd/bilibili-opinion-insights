@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::StatusCode;
-use reqwest::header::{ACCEPT, COOKIE, HeaderMap, HeaderValue, REFERER, USER_AGENT};
+use reqwest::header::{ACCEPT, COOKIE, HeaderMap, HeaderValue, REFERER, SET_COOKIE, USER_AGENT};
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -76,6 +76,14 @@ impl BiliClient {
         T: DeserializeOwned,
         Q: Serialize + ?Sized,
     {
+        Ok(self.get_api_with_headers(url, query).await?.data)
+    }
+
+    pub async fn get_api_with_headers<T, Q>(&self, url: &str, query: &Q) -> Result<ApiResponse<T>>
+    where
+        T: DeserializeOwned,
+        Q: Serialize + ?Sized,
+    {
         let response = self
             .http
             .get(url)
@@ -93,6 +101,7 @@ impl BiliClient {
         let response = response
             .error_for_status()
             .with_context(|| format!("Bilibili API returned a non-success HTTP status: {url}"))?;
+        let headers = response.headers().clone();
 
         let payload: BiliApiResponse<T> = response
             .json()
@@ -106,9 +115,11 @@ impl BiliClient {
             });
         }
 
-        payload
+        let data = payload
             .data
-            .ok_or_else(|| anyhow!("Bilibili API response did not include data: {url}"))
+            .ok_or_else(|| anyhow!("Bilibili API response did not include data: {url}"))?;
+
+        Ok(ApiResponse { data, headers })
     }
 
     pub async fn get_bytes<Q>(&self, url: &str, query: &Q) -> Result<Vec<u8>>
@@ -138,6 +149,29 @@ impl BiliClient {
             .await
             .with_context(|| format!("failed to read Bilibili API bytes response: {url}"))?
             .to_vec())
+    }
+}
+
+pub struct ApiResponse<T> {
+    pub data: T,
+    pub headers: HeaderMap,
+}
+
+pub fn cookie_header_from_set_cookie(headers: &HeaderMap) -> Option<String> {
+    let cookies = headers
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .filter_map(|value| value.split(';').next())
+        .filter(|pair| !pair.trim().is_empty())
+        .map(str::trim)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+
+    if cookies.is_empty() {
+        None
+    } else {
+        Some(cookies.join("; "))
     }
 }
 
