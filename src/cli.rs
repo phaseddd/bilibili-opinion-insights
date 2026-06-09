@@ -25,11 +25,25 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    /// Check whether the current Bilibili credentials are recognized.
+    Auth(AuthArgs),
+
     /// Fetch basic metadata for a Bilibili video.
     Video(VideoArgs),
 
     /// Collect comments for one or more Bilibili videos.
     Comments(CommentsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AuthArgs {
+    /// Read the full Bilibili Cookie header from a local file.
+    #[arg(long, value_name = "FILE")]
+    pub cookie: Option<PathBuf>,
+
+    /// Use a SESSDATA value directly. Treat this as a secret.
+    #[arg(long, value_name = "VALUE")]
+    pub sessdata: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -94,9 +108,29 @@ pub enum OutputFormat {
 
 pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Commands::Auth(args) => run_auth(args).await,
         Commands::Video(args) => run_video(args).await,
         Commands::Comments(args) => run_comments(args).await,
     }
+}
+
+async fn run_auth(args: AuthArgs) -> Result<()> {
+    let cookie_header = load_cookie_header(&args.cookie, &args.sessdata)?;
+    let client = BiliClient::new(cookie_header)?;
+    let login = client.login_state().await?;
+
+    println!("logged_in: {}", login.is_login);
+    println!(
+        "mid: {}",
+        login
+            .mid
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "<none>".to_string())
+    );
+    println!("uname: {}", login.uname.as_deref().unwrap_or("<none>"));
+    println!("vip_status: {}", login.vip_status);
+
+    Ok(())
 }
 
 async fn run_video(args: VideoArgs) -> Result<()> {
@@ -448,6 +482,18 @@ mod tests {
         assert_eq!(args.bvid, "BV1xx411c7mD");
         assert!(args.cookie.is_none());
         assert!(args.sessdata.is_none());
+    }
+
+    #[test]
+    fn parses_auth_command() {
+        let cli = Cli::parse_from(["bili-opinion", "auth", "--sessdata", "sample"]);
+
+        let Commands::Auth(args) = cli.command else {
+            panic!("expected auth command");
+        };
+
+        assert!(args.cookie.is_none());
+        assert_eq!(args.sessdata.as_deref(), Some("sample"));
     }
 
     #[test]
