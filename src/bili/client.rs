@@ -110,6 +110,35 @@ impl BiliClient {
             .data
             .ok_or_else(|| anyhow!("Bilibili API response did not include data: {url}"))
     }
+
+    pub async fn get_bytes<Q>(&self, url: &str, query: &Q) -> Result<Vec<u8>>
+    where
+        Q: Serialize + ?Sized,
+    {
+        let response = self
+            .http
+            .get(url)
+            .query(query)
+            .send()
+            .await
+            .with_context(|| format!("failed to request Bilibili API: {url}"))?;
+
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            bail!(
+                "Bilibili HTTP 429: too many requests; increase --request-delay-ms or retry later"
+            );
+        }
+
+        let response = response
+            .error_for_status()
+            .with_context(|| format!("Bilibili API returned a non-success HTTP status: {url}"))?;
+
+        Ok(response
+            .bytes()
+            .await
+            .with_context(|| format!("failed to read Bilibili API bytes response: {url}"))?
+            .to_vec())
+    }
 }
 
 pub fn api_error_code(error: &anyhow::Error) -> Option<i64> {

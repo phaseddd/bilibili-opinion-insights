@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use crate::bili::client::BiliClient;
 use crate::bili::comment::CommentRecord;
+use crate::bili::danmaku::{DanmakuRecord, DanmakuSegmentContext, segment_count};
 use crate::bili::video::VideoInfo;
 
 #[derive(Debug, Parser)]
@@ -33,6 +34,9 @@ pub enum Commands {
 
     /// Collect comments for one or more Bilibili videos.
     Comments(CommentsArgs),
+
+    /// Collect danmaku for one or more Bilibili videos.
+    Danmaku(DanmakuArgs),
 }
 
 #[derive(Debug, Args)]
@@ -100,6 +104,37 @@ pub struct CommentsArgs {
     pub request_delay_ms: u64,
 }
 
+#[derive(Debug, Args)]
+pub struct DanmakuArgs {
+    /// Bilibili video BVID values, for example BV1xx411c7mD.
+    #[arg(value_name = "BVID")]
+    pub bvids: Vec<String>,
+
+    /// Read BVID values from a UTF-8 text file, one BVID per line.
+    #[arg(long, value_name = "FILE")]
+    pub input: Option<PathBuf>,
+
+    /// Read the full Bilibili Cookie header from a local file.
+    #[arg(long, value_name = "FILE")]
+    pub cookie: Option<PathBuf>,
+
+    /// Use a SESSDATA value directly. Treat this as a secret.
+    #[arg(long, value_name = "VALUE")]
+    pub sessdata: Option<String>,
+
+    /// Output directory for collected danmaku.
+    #[arg(long, value_name = "DIR", default_value = "output")]
+    pub output: PathBuf,
+
+    /// Limit segments per video page. Useful for smoke tests.
+    #[arg(long, value_name = "N")]
+    pub max_segments: Option<u64>,
+
+    /// Delay between danmaku segment requests in milliseconds.
+    #[arg(long, value_name = "MS", default_value_t = 500)]
+    pub request_delay_ms: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum OutputFormat {
     Csv,
@@ -111,6 +146,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Commands::Auth(args) => run_auth(args).await,
         Commands::Video(args) => run_video(args).await,
         Commands::Comments(args) => run_comments(args).await,
+        Commands::Danmaku(args) => run_danmaku(args).await,
     }
 }
 
@@ -142,7 +178,7 @@ async fn run_video(args: VideoArgs) -> Result<()> {
 }
 
 async fn run_comments(args: CommentsArgs) -> Result<()> {
-    let bvids = collect_comment_bvids(&args.bvids, &args.input)?;
+    let bvids = collect_bvids(&args.bvids, &args.input)?;
     let cookie_header = load_cookie_header(&args.cookie, &args.sessdata)?;
     let client = BiliClient::new(cookie_header)?;
     let mut failures = Vec::new();
@@ -185,6 +221,40 @@ async fn run_comments(args: CommentsArgs) -> Result<()> {
     Ok(())
 }
 
+async fn run_danmaku(args: DanmakuArgs) -> Result<()> {
+    let bvids = collect_bvids(&args.bvids, &args.input)?;
+    let cookie_header = load_cookie_header(&args.cookie, &args.sessdata)?;
+    let client = BiliClient::new(cookie_header)?;
+    let mut failures = Vec::new();
+
+    for bvid in bvids {
+        match collect_one_video_danmaku(&client, &args, &bvid).await {
+            Ok(outcome) => {
+                println!(
+                    "wrote {} danmaku records for {} (segments_scanned: {})",
+                    outcome.record_count, outcome.bvid, outcome.segments_scanned
+                );
+                println!("output: {}", outcome.path.display());
+            }
+            Err(error) => {
+                eprintln!("failed to collect danmaku {bvid}: {error}");
+                failures.push(VideoFailure {
+                    bvid,
+                    error: error.to_string(),
+                });
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        let path = write_failure_report(&args.output, &failures)?;
+        eprintln!("failure_report: {}", path.display());
+        bail!("{} video(s) failed", failures.len());
+    }
+
+    Ok(())
+}
+
 struct VideoCommentOutcome {
     bvid: String,
     comment_count: usize,
@@ -192,6 +262,13 @@ struct VideoCommentOutcome {
     reply_pages_scanned: usize,
     next_cursor: Option<String>,
     outputs: Vec<OutputWriteResult>,
+}
+
+struct VideoDanmakuOutcome {
+    bvid: String,
+    record_count: usize,
+    segments_scanned: u64,
+    path: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -230,6 +307,53 @@ async fn collect_one_video_comments(
     })
 }
 
+async fn collect_one_video_danmaku(
+    client: &BiliClient,
+    args: &DanmakuArgs,
+    bvid: &str,
+) -> Result<VideoDanmakuOutcome> {
+    tracing::info!(bvid, "collecting danmaku");
+    let video = client.video_info(bvid).await?;
+    let mut records = Vec::new();
+    let mut segments_scanned = 0;
+    let delay = request_delay(args.request_delay_ms);
+
+    for page in &video.pages {
+        let mut segments = segment_count(page.duration);
+        if let Some(limit) = args.max_segments {
+            segments = segments.min(limit);
+        }
+
+        for segment_index in 1..=segments {
+            if segments_scanned > 0 {
+                sleep_cli_delay(delay).await;
+            }
+
+            let mut segment_records = client
+                .danmaku_segment(DanmakuSegmentContext {
+                    bvid: &video.bvid,
+                    aid: video.aid,
+                    cid: page.cid,
+                    page: page.page,
+                    part: &page.part,
+                    segment_index,
+                })
+                .await?;
+            segments_scanned += 1;
+            records.append(&mut segment_records);
+        }
+    }
+
+    let path = write_danmaku_jsonl(&args.output, &video.bvid, &records)?;
+
+    Ok(VideoDanmakuOutcome {
+        bvid: video.bvid,
+        record_count: records.len(),
+        segments_scanned,
+        path,
+    })
+}
+
 fn request_delay(milliseconds: u64) -> Option<Duration> {
     if milliseconds == 0 {
         None
@@ -238,7 +362,15 @@ fn request_delay(milliseconds: u64) -> Option<Duration> {
     }
 }
 
-fn collect_comment_bvids(positional: &[String], input: &Option<PathBuf>) -> Result<Vec<String>> {
+async fn sleep_cli_delay(request_delay: Option<Duration>) {
+    if let Some(delay) = request_delay
+        && !delay.is_zero()
+    {
+        tokio::time::sleep(delay).await;
+    }
+}
+
+fn collect_bvids(positional: &[String], input: &Option<PathBuf>) -> Result<Vec<String>> {
     let mut bvids = positional
         .iter()
         .map(|value| value.trim())
@@ -262,6 +394,24 @@ fn collect_comment_bvids(positional: &[String], input: &Option<PathBuf>) -> Resu
     }
 
     Ok(bvids)
+}
+
+fn write_danmaku_jsonl(
+    output_root: &Path,
+    bvid: &str,
+    records: &[DanmakuRecord],
+) -> Result<PathBuf> {
+    let video_dir = output_root.join(bvid);
+    fs::create_dir_all(&video_dir)?;
+    let path = video_dir.join("danmaku.jsonl");
+    let file = File::create(&path)?;
+    let mut writer = BufWriter::new(file);
+    for record in records {
+        serde_json::to_writer(&mut writer, record)?;
+        writeln!(writer)?;
+    }
+    writer.flush()?;
+    Ok(path)
 }
 
 fn load_cookie_header(
@@ -510,8 +660,8 @@ mod tests {
             std::env::temp_dir().join(format!("bili-opinion-bvids-{}.txt", std::process::id()));
         fs::write(&path, "\nBV_input_1\nBV_input_2\n").expect("write input");
 
-        let bvids = collect_comment_bvids(&["BV_positional".to_string()], &Some(path.clone()))
-            .expect("bvids");
+        let bvids =
+            collect_bvids(&["BV_positional".to_string()], &Some(path.clone())).expect("bvids");
 
         fs::remove_file(path).expect("remove input");
 
@@ -566,6 +716,24 @@ mod tests {
         assert_eq!(jsonl.lines().count(), 2);
 
         fs::remove_dir_all(output_root).expect("remove output");
+    }
+
+    #[test]
+    fn parses_danmaku_command() {
+        let cli = Cli::parse_from([
+            "bili-opinion",
+            "danmaku",
+            "BV1xx411c7mD",
+            "--max-segments",
+            "1",
+        ]);
+
+        let Commands::Danmaku(args) = cli.command else {
+            panic!("expected danmaku command");
+        };
+
+        assert_eq!(args.bvids, ["BV1xx411c7mD"]);
+        assert_eq!(args.max_segments, Some(1));
     }
 
     fn sample_comment(rpid: u64) -> CommentRecord {
