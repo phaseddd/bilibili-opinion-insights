@@ -28,3 +28,12 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: bili-opinion-windows
+          path: target/release/bili-opinion.exe
