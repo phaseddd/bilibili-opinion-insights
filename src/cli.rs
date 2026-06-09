@@ -1,7 +1,11 @@
+use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+
+use crate::bili::client::BiliClient;
+use crate::bili::video::VideoInfo;
 
 #[derive(Debug, Parser)]
 #[command(name = "bili-opinion")]
@@ -16,8 +20,26 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    /// Fetch basic metadata for a Bilibili video.
+    Video(VideoArgs),
+
     /// Collect comments for one or more Bilibili videos.
     Comments(CommentsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct VideoArgs {
+    /// Bilibili video BVID, for example BV1xx411c7mD.
+    #[arg(value_name = "BVID")]
+    pub bvid: String,
+
+    /// Read the full Bilibili Cookie header from a local file.
+    #[arg(long, value_name = "FILE")]
+    pub cookie: Option<PathBuf>,
+
+    /// Use a SESSDATA value directly. Treat this as a secret.
+    #[arg(long, value_name = "VALUE")]
+    pub sessdata: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -55,8 +77,17 @@ pub enum OutputFormat {
 
 pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Commands::Video(args) => run_video(args).await,
         Commands::Comments(args) => run_comments(args).await,
     }
+}
+
+async fn run_video(args: VideoArgs) -> Result<()> {
+    let cookie_header = load_cookie_header(&args.cookie, &args.sessdata)?;
+    let client = BiliClient::new(cookie_header)?;
+    let video = client.video_info(&args.bvid).await?;
+    print_video_info(&video);
+    Ok(())
 }
 
 async fn run_comments(args: CommentsArgs) -> Result<()> {
@@ -72,6 +103,52 @@ async fn run_comments(args: CommentsArgs) -> Result<()> {
     );
 
     bail!("comment collection is not implemented yet; this milestone only scaffolds the CLI")
+}
+
+fn load_cookie_header(
+    cookie: &Option<PathBuf>,
+    sessdata: &Option<String>,
+) -> Result<Option<String>> {
+    match (cookie, sessdata) {
+        (Some(_), Some(_)) => bail!("use either --cookie or --sessdata, not both"),
+        (Some(path), None) => {
+            let content = fs::read_to_string(path)
+                .map(|value| value.trim().to_string())
+                .map_err(anyhow::Error::from)?;
+
+            if content.is_empty() {
+                bail!("cookie file is empty: {}", path.display());
+            }
+
+            Ok(Some(content))
+        }
+        (None, Some(value)) => {
+            let sessdata = value.trim();
+            if sessdata.is_empty() {
+                bail!("--sessdata cannot be empty");
+            }
+
+            Ok(Some(format!("SESSDATA={sessdata}")))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+fn print_video_info(video: &VideoInfo) {
+    println!("bvid: {}", video.bvid);
+    println!("aid: {}", video.aid);
+    println!("cid: {}", video.cid);
+    println!("title: {}", video.title);
+    println!("comment_count: {}", video.comment_count);
+    println!("danmaku_count: {}", video.danmaku_count);
+    println!("pages: {}", video.pages.len());
+
+    for page in &video.pages {
+        println!(
+            "page {}: cid={}, duration={}, part={}",
+            page.page, page.cid, page.duration, page.part
+        );
+    }
 }
 
 #[cfg(test)]
@@ -96,9 +173,32 @@ mod tests {
             "output",
         ]);
 
-        let Commands::Comments(args) = cli.command;
+        let Commands::Comments(args) = cli.command else {
+            panic!("expected comments command");
+        };
         assert_eq!(args.bvids, ["BV1xx411c7mD"]);
         assert_eq!(args.format, [OutputFormat::Csv, OutputFormat::Jsonl]);
         assert_eq!(args.output, PathBuf::from("output"));
+    }
+
+    #[test]
+    fn parses_video_command() {
+        let cli = Cli::parse_from(["bili-opinion", "video", "BV1xx411c7mD"]);
+
+        let Commands::Video(args) = cli.command else {
+            panic!("expected video command");
+        };
+
+        assert_eq!(args.bvid, "BV1xx411c7mD");
+        assert!(args.cookie.is_none());
+        assert!(args.sessdata.is_none());
+    }
+
+    #[test]
+    fn formats_sessdata_as_cookie_header() {
+        let cookie =
+            load_cookie_header(&None, &Some("sample_sessdata".to_string())).expect("cookie header");
+
+        assert_eq!(cookie, Some("SESSDATA=sample_sessdata".to_string()));
     }
 }
