@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::time::Duration;
 
 use anyhow::Result;
 use serde::de::Deserializer;
@@ -141,10 +142,11 @@ impl BiliClient {
         oid: u64,
         max_pages: Option<usize>,
         max_reply_pages: Option<usize>,
+        request_delay: Option<Duration>,
     ) -> Result<CommentBatch> {
         let mut batch = match self.wbi_main_comment_page(bvid, oid, None).await {
             Ok(page) => {
-                self.collect_wbi_main_comments(bvid, oid, page, max_pages)
+                self.collect_wbi_main_comments(bvid, oid, page, max_pages, request_delay)
                     .await
             }
             Err(error) if api_error_code(&error) == Some(-101) => {
@@ -152,7 +154,7 @@ impl BiliClient {
                     "WBI comment endpoint requires login; falling back to legacy endpoint"
                 );
                 let page = self.legacy_main_comment_page(bvid, oid, 0).await?;
-                self.collect_legacy_main_comments(bvid, oid, page, max_pages)
+                self.collect_legacy_main_comments(bvid, oid, page, max_pages, request_delay)
                     .await
             }
             Err(error) => Err(error),
@@ -172,7 +174,14 @@ impl BiliClient {
 
         for (root, expected_count) in roots {
             let reply_batch = self
-                .secondary_comments(bvid, oid, root, expected_count, max_reply_pages)
+                .secondary_comments(
+                    bvid,
+                    oid,
+                    root,
+                    expected_count,
+                    max_reply_pages,
+                    request_delay,
+                )
                 .await?;
             batch.reply_pages_scanned += reply_batch.pages_scanned;
             push_unique_comments(&mut batch.comments, &mut seen, reply_batch.comments);
@@ -187,6 +196,7 @@ impl BiliClient {
         oid: u64,
         first_page: CommentPage,
         max_pages: Option<usize>,
+        request_delay: Option<Duration>,
     ) -> Result<CommentBatch> {
         let mut comments = Vec::new();
         let mut seen = HashSet::new();
@@ -214,6 +224,7 @@ impl BiliClient {
                 break;
             }
 
+            sleep_request_delay(request_delay).await;
             page = Some(self.wbi_main_comment_page(bvid, oid, Some(offset)).await?);
         }
 
@@ -231,6 +242,7 @@ impl BiliClient {
         oid: u64,
         first_page: CommentPage,
         max_pages: Option<usize>,
+        request_delay: Option<Duration>,
     ) -> Result<CommentBatch> {
         let mut comments = Vec::new();
         let mut seen = HashSet::new();
@@ -258,6 +270,7 @@ impl BiliClient {
                 break;
             }
 
+            sleep_request_delay(request_delay).await;
             page = Some(self.legacy_main_comment_page(bvid, oid, *next).await?);
         }
 
@@ -276,6 +289,7 @@ impl BiliClient {
         root: u64,
         expected_count: u64,
         max_reply_pages: Option<usize>,
+        request_delay: Option<Duration>,
     ) -> Result<SecondaryCommentBatch> {
         let mut comments = Vec::new();
         let mut pages_scanned = 0;
@@ -301,6 +315,7 @@ impl BiliClient {
             }
 
             pn += 1;
+            sleep_request_delay(request_delay).await;
         }
 
         Ok(SecondaryCommentBatch {
@@ -446,6 +461,14 @@ fn push_unique_comments(
 
 fn reached_page_limit(pages_scanned: usize, max_pages: Option<usize>) -> bool {
     max_pages.is_some_and(|limit| pages_scanned >= limit)
+}
+
+async fn sleep_request_delay(request_delay: Option<Duration>) {
+    if let Some(delay) = request_delay
+        && !delay.is_zero()
+    {
+        tokio::time::sleep(delay).await;
+    }
 }
 
 fn deserialize_null_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>

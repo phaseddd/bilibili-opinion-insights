@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, COOKIE, HeaderMap, HeaderValue, REFERER, USER_AGENT};
 use serde::Deserialize;
 use serde::Serialize;
@@ -34,7 +35,13 @@ impl std::fmt::Display for BiliApiError {
             formatter,
             "Bilibili API error {}: {}",
             self.code, self.message
-        )
+        )?;
+
+        if let Some(hint) = api_error_hint(self.code) {
+            write!(formatter, " ({hint})")?;
+        }
+
+        Ok(())
     }
 }
 
@@ -75,7 +82,15 @@ impl BiliClient {
             .query(query)
             .send()
             .await
-            .with_context(|| format!("failed to request Bilibili API: {url}"))?
+            .with_context(|| format!("failed to request Bilibili API: {url}"))?;
+
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            bail!(
+                "Bilibili HTTP 429: too many requests; increase --request-delay-ms or retry later"
+            );
+        }
+
+        let response = response
             .error_for_status()
             .with_context(|| format!("Bilibili API returned a non-success HTTP status: {url}"))?;
 
@@ -101,4 +116,15 @@ pub fn api_error_code(error: &anyhow::Error) -> Option<i64> {
     error
         .chain()
         .find_map(|cause| cause.downcast_ref::<BiliApiError>().map(|api| api.code))
+}
+
+fn api_error_hint(code: i64) -> Option<&'static str> {
+    match code {
+        -101 => Some("login state is missing or expired; pass --cookie or --sessdata"),
+        -352 => Some(
+            "request was rejected by Bilibili risk control; slow down or use a fresh browser cookie",
+        ),
+        -400 => Some("request parameters are invalid; check the BVID and collected aid/oid"),
+        _ => None,
+    }
 }

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -79,6 +80,10 @@ pub struct CommentsArgs {
     /// Limit secondary comment pages per root comment. Useful for smoke tests.
     #[arg(long, value_name = "N")]
     pub max_reply_pages: Option<usize>,
+
+    /// Delay between comment page requests in milliseconds.
+    #[arg(long, value_name = "MS", default_value_t = 500)]
+    pub request_delay_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -171,7 +176,13 @@ async fn collect_one_video_comments(
     tracing::info!(bvid, "collecting comments");
     let video = client.video_info(bvid).await?;
     let batch = client
-        .main_comments(&video.bvid, video.aid, args.max_pages, args.max_reply_pages)
+        .main_comments(
+            &video.bvid,
+            video.aid,
+            args.max_pages,
+            args.max_reply_pages,
+            request_delay(args.request_delay_ms),
+        )
         .await?;
     let outputs = write_comment_outputs(&args.output, &video.bvid, &batch.comments, &args.format)?;
 
@@ -183,6 +194,14 @@ async fn collect_one_video_comments(
         next_cursor: batch.next_cursor,
         outputs,
     })
+}
+
+fn request_delay(milliseconds: u64) -> Option<Duration> {
+    if milliseconds == 0 {
+        None
+    } else {
+        Some(Duration::from_millis(milliseconds))
+    }
 }
 
 fn collect_comment_bvids(positional: &[String], input: &Option<PathBuf>) -> Result<Vec<String>> {
