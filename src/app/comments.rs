@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
+use crate::app::events::CollectionEvent;
 use crate::bili::client::BiliClient;
 use crate::bili::comment::{CommentRecord, CommentScanSummary};
 
@@ -39,11 +40,32 @@ pub struct CommentOutputWriteResult {
     pub appended_count: usize,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct CommentWriteCounts {
+    records_scanned: usize,
+    records_appended: usize,
+}
+
 pub async fn collect_video_comments(
     client: &BiliClient,
     bvid: &str,
     options: &CommentCollectionOptions,
 ) -> Result<CommentCollectionOutcome> {
+    collect_video_comments_with_events(client, bvid, options, |_| Ok(())).await
+}
+
+pub async fn collect_video_comments_with_events<F>(
+    client: &BiliClient,
+    bvid: &str,
+    options: &CommentCollectionOptions,
+    mut on_event: F,
+) -> Result<CommentCollectionOutcome>
+where
+    F: FnMut(CollectionEvent) -> Result<()>,
+{
+    on_event(CollectionEvent::VideoStarted {
+        bvid: bvid.to_string(),
+    })?;
     tracing::info!(bvid, "collecting comments");
     let video = client.video_info(bvid).await?;
     let expected_total = match client.comment_count(video.aid).await {
@@ -59,8 +81,13 @@ pub async fn collect_video_comments(
     let mut writer = CommentOutputWriter::create(&options.output, &video.bvid, &options.formats)?;
     for path in writer.paths() {
         tracing::info!(path = %path.display(), "initialized comment output");
+        on_event(CollectionEvent::OutputInitialized {
+            bvid: video.bvid.clone(),
+            path: path.to_path_buf(),
+        })?;
     }
 
+    let event_bvid = video.bvid.clone();
     let summary = client
         .stream_comments(
             &video.bvid,
@@ -68,7 +95,15 @@ pub async fn collect_video_comments(
             options.max_pages,
             options.max_reply_pages,
             options.request_delay,
-            |comments| writer.write_comments(comments),
+            |comments| {
+                let counts = writer.write_comments(comments)?;
+                on_event(CollectionEvent::CommentBatchWritten {
+                    bvid: event_bvid.clone(),
+                    records_scanned: counts.records_scanned,
+                    records_appended: counts.records_appended,
+                })?;
+                Ok(())
+            },
         )
         .await?;
     let outputs = writer.finish()?;
@@ -77,6 +112,9 @@ pub async fn collect_video_comments(
         .map(|output| output.appended_count)
         .max()
         .unwrap_or(0);
+    on_event(CollectionEvent::VideoFinished {
+        bvid: video.bvid.clone(),
+    })?;
 
     Ok(CommentCollectionOutcome {
         bvid: video.bvid,
@@ -159,11 +197,15 @@ impl CommentOutputWriter {
         self.outputs.iter().map(CommentFormatWriter::path).collect()
     }
 
-    fn write_comments(&mut self, comments: &[CommentRecord]) -> Result<()> {
+    fn write_comments(&mut self, comments: &[CommentRecord]) -> Result<CommentWriteCounts> {
+        let mut records_appended = 0;
         for output in &mut self.outputs {
-            output.write_comments(comments)?;
+            records_appended = records_appended.max(output.write_comments(comments)?);
         }
-        Ok(())
+        Ok(CommentWriteCounts {
+            records_scanned: comments.len(),
+            records_appended,
+        })
     }
 
     fn finish(mut self) -> Result<Vec<CommentOutputWriteResult>> {
@@ -230,7 +272,7 @@ impl CommentFormatWriter {
         }
     }
 
-    fn write_comments(&mut self, comments: &[CommentRecord]) -> Result<()> {
+    fn write_comments(&mut self, comments: &[CommentRecord]) -> Result<usize> {
         match self {
             Self::Csv {
                 writer,
@@ -238,13 +280,16 @@ impl CommentFormatWriter {
                 appended_count,
                 ..
             } => {
+                let mut batch_appended = 0;
                 for comment in comments {
                     if seen.insert(comment.rpid) {
                         writer.serialize(comment)?;
                         *appended_count += 1;
+                        batch_appended += 1;
                     }
                 }
                 flush_csv_writer(writer.as_mut())?;
+                Ok(batch_appended)
             }
             Self::Jsonl {
                 writer,
@@ -252,18 +297,19 @@ impl CommentFormatWriter {
                 appended_count,
                 ..
             } => {
+                let mut batch_appended = 0;
                 for comment in comments {
                     if seen.insert(comment.rpid) {
                         serde_json::to_writer(&mut *writer, comment)?;
                         writeln!(writer)?;
                         *appended_count += 1;
+                        batch_appended += 1;
                     }
                 }
                 flush_jsonl_writer(writer)?;
+                Ok(batch_appended)
             }
         }
-
-        Ok(())
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -407,6 +453,47 @@ mod tests {
 
         assert_eq!(csv.lines().count(), 3);
         assert_eq!(jsonl.lines().count(), 2);
+
+        fs::remove_dir_all(output_root).expect("remove output");
+    }
+
+    #[test]
+    fn comment_output_writer_reports_per_batch_counts() {
+        let output_root =
+            std::env::temp_dir().join(format!("bili-opinion-count-output-{}", std::process::id()));
+        if output_root.exists() {
+            fs::remove_dir_all(&output_root).expect("remove old output");
+        }
+
+        let mut writer = CommentOutputWriter::create(
+            &output_root,
+            "BV1xx411c7mD",
+            &[CommentOutputFormat::Csv, CommentOutputFormat::Jsonl],
+        )
+        .expect("create writer");
+
+        let first = writer
+            .write_comments(&[sample_comment(1), sample_comment(2)])
+            .expect("write first batch");
+        let second = writer
+            .write_comments(&[sample_comment(2), sample_comment(3)])
+            .expect("write second batch");
+        writer.finish().expect("finish writer");
+
+        assert_eq!(
+            first,
+            CommentWriteCounts {
+                records_scanned: 2,
+                records_appended: 2,
+            }
+        );
+        assert_eq!(
+            second,
+            CommentWriteCounts {
+                records_scanned: 2,
+                records_appended: 1,
+            }
+        );
 
         fs::remove_dir_all(output_root).expect("remove output");
     }

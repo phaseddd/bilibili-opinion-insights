@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use serde::Serialize;
 
+use crate::app::events::CollectionEvent;
 use crate::bili::client::BiliClient;
 use crate::bili::danmaku::{
     DanmakuRecord, DanmakuSegment, DanmakuSegmentContext, DanmakuSegmentMetadata, segment_count,
@@ -42,9 +43,30 @@ pub async fn collect_video_danmaku(
     bvid: &str,
     options: &DanmakuCollectionOptions,
 ) -> Result<DanmakuCollectionOutcome> {
+    collect_video_danmaku_with_events(client, bvid, options, |_| Ok(())).await
+}
+
+pub async fn collect_video_danmaku_with_events<F>(
+    client: &BiliClient,
+    bvid: &str,
+    options: &DanmakuCollectionOptions,
+    mut on_event: F,
+) -> Result<DanmakuCollectionOutcome>
+where
+    F: FnMut(CollectionEvent) -> Result<()>,
+{
+    on_event(CollectionEvent::VideoStarted {
+        bvid: bvid.to_string(),
+    })?;
     tracing::info!(bvid, "collecting danmaku");
     let video = client.video_info(bvid).await?;
     let mut writer = DanmakuOutputWriter::create(&options.output, &video.bvid)?;
+    for path in writer.paths() {
+        on_event(CollectionEvent::OutputInitialized {
+            bvid: video.bvid.clone(),
+            path,
+        })?;
+    }
     let mut records_scanned = 0;
     let mut records_appended = 0;
     let mut segments_scanned = 0;
@@ -77,10 +99,22 @@ pub async fn collect_video_danmaku(
             records_scanned += counts.records_scanned;
             records_appended += counts.records_appended;
             segments_appended += counts.segments_appended;
+            on_event(CollectionEvent::DanmakuSegmentWritten {
+                bvid: video.bvid.clone(),
+                cid: page.cid,
+                page: page.page,
+                segment_index,
+                records_scanned: counts.records_scanned,
+                records_appended: counts.records_appended,
+                segment_appended: counts.segments_appended > 0,
+            })?;
         }
     }
 
     let output = writer.finish()?;
+    on_event(CollectionEvent::VideoFinished {
+        bvid: video.bvid.clone(),
+    })?;
 
     Ok(DanmakuCollectionOutcome {
         bvid: video.bvid,
@@ -163,6 +197,10 @@ impl DanmakuOutputWriter {
             records_appended,
             segments_appended,
         })
+    }
+
+    fn paths(&self) -> [PathBuf; 2] {
+        [self.record_path.clone(), self.segment_metadata_path.clone()]
     }
 
     fn finish(mut self) -> Result<DanmakuOutputPaths> {
