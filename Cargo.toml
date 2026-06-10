@@ -5,10 +5,21 @@ edition = "2024"
 description = "Collect Bilibili video comments for opinion analysis."
 publish = false
 
+[features]
+default = []
+gui-gpui = ["dep:gpui", "dep:gpui-component"]
+
+[[bin]]
+name = "bili-opinion-gui"
+path = "src/bin/bili-opinion-gui.rs"
+required-features = ["gui-gpui"]
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 csv = "1.3"
+gpui = { version = "0.2.2", optional = true }
+gpui-component = { version = "0.5.1", optional = true }
 md5 = "0.8"
 percent-encoding = "2.3"
 prost = "0.13"
