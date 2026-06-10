@@ -8,10 +8,10 @@ use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
+use crate::app::danmaku::{DanmakuCollectionOptions, collect_video_danmaku};
 use crate::bili::auth::{QrLoginStatus, render_terminal_qr};
 use crate::bili::client::BiliClient;
 use crate::bili::comment::{CommentRecord, CommentScanSummary};
-use crate::bili::danmaku::{DanmakuRecord, DanmakuSegmentContext, segment_count};
 use crate::bili::video::VideoInfo;
 
 #[derive(Debug, Parser)]
@@ -310,15 +310,24 @@ async fn run_danmaku(args: DanmakuArgs) -> Result<()> {
     let cookie_header = load_cookie_header(&args.cookie, &args.sessdata)?;
     let client = BiliClient::new(cookie_header)?;
     let mut failures = Vec::new();
+    let options = DanmakuCollectionOptions {
+        output: args.output.clone(),
+        max_segments: args.max_segments,
+        request_delay: request_delay(args.request_delay_ms),
+    };
 
     for bvid in bvids {
-        match collect_one_video_danmaku(&client, &args, &bvid).await {
+        match collect_video_danmaku(&client, &bvid, &options).await {
             Ok(outcome) => {
                 println!(
                     "wrote {} danmaku records for {} (segments_scanned: {})",
                     outcome.record_count, outcome.bvid, outcome.segments_scanned
                 );
-                println!("output: {}", outcome.path.display());
+                println!("output: {}", outcome.record_path.display());
+                println!(
+                    "segment_metadata: {}",
+                    outcome.segment_metadata_path.display()
+                );
             }
             Err(error) => {
                 eprintln!("failed to collect danmaku {bvid}: {error}");
@@ -345,13 +354,6 @@ struct VideoCommentOutcome {
     summary: CommentScanSummary,
     appended_count: usize,
     outputs: Vec<OutputWriteResult>,
-}
-
-struct VideoDanmakuOutcome {
-    bvid: String,
-    record_count: usize,
-    segments_scanned: u64,
-    path: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -410,66 +412,11 @@ async fn collect_one_video_comments(
     })
 }
 
-async fn collect_one_video_danmaku(
-    client: &BiliClient,
-    args: &DanmakuArgs,
-    bvid: &str,
-) -> Result<VideoDanmakuOutcome> {
-    tracing::info!(bvid, "collecting danmaku");
-    let video = client.video_info(bvid).await?;
-    let mut records = Vec::new();
-    let mut segments_scanned = 0;
-    let delay = request_delay(args.request_delay_ms);
-
-    for page in &video.pages {
-        let mut segments = segment_count(page.duration);
-        if let Some(limit) = args.max_segments {
-            segments = segments.min(limit);
-        }
-
-        for segment_index in 1..=segments {
-            if segments_scanned > 0 {
-                sleep_cli_delay(delay).await;
-            }
-
-            let mut segment_records = client
-                .danmaku_segment(DanmakuSegmentContext {
-                    bvid: &video.bvid,
-                    aid: video.aid,
-                    cid: page.cid,
-                    page: page.page,
-                    part: &page.part,
-                    segment_index,
-                })
-                .await?;
-            segments_scanned += 1;
-            records.append(&mut segment_records);
-        }
-    }
-
-    let path = write_danmaku_jsonl(&args.output, &video.bvid, &records)?;
-
-    Ok(VideoDanmakuOutcome {
-        bvid: video.bvid,
-        record_count: records.len(),
-        segments_scanned,
-        path,
-    })
-}
-
 fn request_delay(milliseconds: u64) -> Option<Duration> {
     if milliseconds == 0 {
         None
     } else {
         Some(Duration::from_millis(milliseconds))
-    }
-}
-
-async fn sleep_cli_delay(request_delay: Option<Duration>) {
-    if let Some(delay) = request_delay
-        && !delay.is_zero()
-    {
-        tokio::time::sleep(delay).await;
     }
 }
 
@@ -497,24 +444,6 @@ fn collect_bvids(positional: &[String], input: &Option<PathBuf>) -> Result<Vec<S
     }
 
     Ok(bvids)
-}
-
-fn write_danmaku_jsonl(
-    output_root: &Path,
-    bvid: &str,
-    records: &[DanmakuRecord],
-) -> Result<PathBuf> {
-    let video_dir = output_root.join(bvid);
-    fs::create_dir_all(&video_dir)?;
-    let path = video_dir.join("danmaku.jsonl");
-    let file = File::create(&path)?;
-    let mut writer = BufWriter::new(file);
-    for record in records {
-        serde_json::to_writer(&mut writer, record)?;
-        writeln!(writer)?;
-    }
-    writer.flush()?;
-    Ok(path)
 }
 
 fn load_cookie_header(
