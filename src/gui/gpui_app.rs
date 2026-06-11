@@ -24,6 +24,7 @@ use crate::app::collection::{
 };
 use crate::app::comments::CommentOutputFormat;
 use crate::app::events::CollectionEvent;
+use crate::bili::video::normalize_bvid_input;
 
 pub fn run() {
     Application::new().run(|cx: &mut App| {
@@ -84,7 +85,7 @@ impl BiliOpinionGui {
             InputState::new(window, cx)
                 .multi_line(true)
                 .rows(4)
-                .placeholder("BVID list")
+                .placeholder("BVID or video URL list")
         });
         let cookie_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -114,15 +115,17 @@ impl BiliOpinionGui {
     }
 
     fn build_draft(&self, cx: &App) -> Result<CollectionDraft, String> {
-        let bvids = self
-            .bvids_input
-            .read(cx)
-            .value()
-            .lines()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
+        let mut bvids = Vec::new();
+        for value in self.bvids_input.read(cx).value().lines() {
+            let value = value.trim();
+            if value.is_empty() {
+                continue;
+            }
+
+            let bvid = normalize_bvid_input(value)
+                .ok_or_else(|| format!("could not find a BVID in input: {value}"))?;
+            bvids.push(bvid);
+        }
 
         if bvids.is_empty() {
             return Err("provide at least one BVID".to_string());
@@ -164,6 +167,8 @@ impl BiliOpinionGui {
                 self.log_lines.clear();
                 self.log_lines
                     .push(format!("videos queued: {}", draft.bvids.len()));
+                self.log_lines
+                    .push(format!("videos: {}", format_bvid_preview(&draft.bvids)));
                 self.log_lines.push(format!(
                     "collect: comments={}, danmaku={}",
                     draft.collect_comments, draft.collect_danmaku
@@ -550,6 +555,23 @@ impl Render for BiliOpinionGui {
 fn trimmed_input(input: &Entity<InputState>, cx: &App) -> Option<String> {
     let value = input.read(cx).value().trim().to_string();
     if value.is_empty() { None } else { Some(value) }
+}
+
+fn format_bvid_preview(bvids: &[String]) -> String {
+    const PREVIEW_LIMIT: usize = 5;
+
+    let mut preview = bvids
+        .iter()
+        .take(PREVIEW_LIMIT)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if bvids.len() > PREVIEW_LIMIT {
+        preview.push_str(&format!(", ... +{} more", bvids.len() - PREVIEW_LIMIT));
+    }
+
+    preview
 }
 
 fn form_section(label: &'static str, input: impl IntoElement) -> impl IntoElement {

@@ -14,7 +14,7 @@ use crate::app::collection::{
 use crate::app::comments::CommentOutputFormat;
 use crate::bili::auth::{QrLoginStatus, render_terminal_qr};
 use crate::bili::client::BiliClient;
-use crate::bili::video::VideoInfo;
+use crate::bili::video::{VideoInfo, normalize_bvid_input};
 
 const CLI_LONG_ABOUT: &str =
     "Collect Bilibili video comments and danmaku for local opinion-analysis workflows.";
@@ -62,12 +62,14 @@ const AUTH_AFTER_HELP: &str = r#"Examples:
 
 const VIDEO_AFTER_HELP: &str = r#"Examples:
   bili-opinion video BV1yEEq68EQ3
+  bili-opinion video https://www.bilibili.com/video/BV1yEEq68EQ3
   bili-opinion video BV1yEEq68EQ3 --cookie config/bilibili-cookie.txt
   bili-opinion video BV1yEEq68EQ3 --anonymous
 "#;
 
 const RUN_AFTER_HELP: &str = r#"Examples:
   bili-opinion run BV1yEEq68EQ3 --output output
+  bili-opinion run https://www.bilibili.com/video/BV1yEEq68EQ3 --output output
   bili-opinion run BV1yEEq68EQ3 --format csv,jsonl --request-delay-ms 1500
   bili-opinion run --input bvids.txt --danmaku-only
 
@@ -76,6 +78,7 @@ This command collects comments and danmaku in one pass by default.
 
 const COMMENTS_AFTER_HELP: &str = r#"Examples:
   bili-opinion comments BV1yEEq68EQ3 --format csv,jsonl
+  bili-opinion comments https://www.bilibili.com/video/BV1yEEq68EQ3 --format csv,jsonl
   bili-opinion comments --input bvids.txt --output output --request-delay-ms 1500
   bili-opinion comments BV1yEEq68EQ3 --max-pages 1 --max-reply-pages 1
 
@@ -84,6 +87,7 @@ For full collection, prefer a browser cookie and a conservative request delay.
 
 const DANMAKU_AFTER_HELP: &str = r#"Examples:
   bili-opinion danmaku BV1yEEq68EQ3
+  bili-opinion danmaku https://www.bilibili.com/video/BV1yEEq68EQ3
   bili-opinion danmaku --input bvids.txt --output output
   bili-opinion danmaku BV1yEEq68EQ3 --max-segments 1
 "#;
@@ -165,8 +169,8 @@ pub struct AuthArgs {
 
 #[derive(Debug, Args)]
 pub struct VideoArgs {
-    /// Bilibili video BVID, for example BV1yEEq68EQ3.
-    #[arg(value_name = "BVID")]
+    /// Bilibili video BVID or video URL, for example BV1yEEq68EQ3.
+    #[arg(value_name = "BVID_OR_URL")]
     pub bvid: String,
 
     #[command(flatten)]
@@ -175,11 +179,11 @@ pub struct VideoArgs {
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Bilibili video BVID values, for example BV1yEEq68EQ3.
-    #[arg(value_name = "BVID")]
+    /// Bilibili video BVID values or video URLs, for example BV1yEEq68EQ3.
+    #[arg(value_name = "BVID_OR_URL")]
     pub bvids: Vec<String>,
 
-    /// Read BVID values from a UTF-8 text file, one BVID per line.
+    /// Read BVID values or video URLs from a UTF-8 text file, one item per line.
     #[arg(long, value_name = "FILE")]
     pub input: Option<PathBuf>,
 
@@ -221,11 +225,11 @@ pub struct RunArgs {
 
 #[derive(Debug, Args)]
 pub struct CommentsArgs {
-    /// Bilibili video BVID values, for example BV1yEEq68EQ3.
-    #[arg(value_name = "BVID")]
+    /// Bilibili video BVID values or video URLs, for example BV1yEEq68EQ3.
+    #[arg(value_name = "BVID_OR_URL")]
     pub bvids: Vec<String>,
 
-    /// Read BVID values from a UTF-8 text file, one BVID per line.
+    /// Read BVID values or video URLs from a UTF-8 text file, one item per line.
     #[arg(long, value_name = "FILE")]
     pub input: Option<PathBuf>,
 
@@ -255,11 +259,11 @@ pub struct CommentsArgs {
 
 #[derive(Debug, Args)]
 pub struct DanmakuArgs {
-    /// Bilibili video BVID values, for example BV1yEEq68EQ3.
-    #[arg(value_name = "BVID")]
+    /// Bilibili video BVID values or video URLs, for example BV1yEEq68EQ3.
+    #[arg(value_name = "BVID_OR_URL")]
     pub bvids: Vec<String>,
 
-    /// Read BVID values from a UTF-8 text file, one BVID per line.
+    /// Read BVID values or video URLs from a UTF-8 text file, one item per line.
     #[arg(long, value_name = "FILE")]
     pub input: Option<PathBuf>,
 
@@ -403,7 +407,8 @@ async fn run_video(args: VideoArgs) -> Result<()> {
     let credentials = credential_options(&args.credentials);
     let cookie_header = load_cookie_header(&credentials)?;
     let client = BiliClient::new(cookie_header)?;
-    let video = client.video_info(&args.bvid).await?;
+    let bvid = normalize_bvid_value(&args.bvid)?;
+    let video = client.video_info(&bvid).await?;
     print_video_info(&video);
     Ok(())
 }
@@ -583,22 +588,21 @@ fn request_delay(milliseconds: u64) -> Option<Duration> {
 }
 
 fn collect_bvids(positional: &[String], input: &Option<PathBuf>) -> Result<Vec<String>> {
-    let mut bvids = positional
-        .iter()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
+    let mut bvids = Vec::new();
+
+    for value in positional {
+        if let Some(bvid) = normalize_bvid_value_if_present(value)? {
+            bvids.push(bvid);
+        }
+    }
 
     if let Some(path) = input {
         let content = fs::read_to_string(path)?;
-        bvids.extend(
-            content
-                .lines()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-        );
+        for value in content.lines() {
+            if let Some(bvid) = normalize_bvid_value_if_present(value)? {
+                bvids.push(bvid);
+            }
+        }
     }
 
     if bvids.is_empty() {
@@ -606,6 +610,20 @@ fn collect_bvids(positional: &[String], input: &Option<PathBuf>) -> Result<Vec<S
     }
 
     Ok(bvids)
+}
+
+fn normalize_bvid_value(value: &str) -> Result<String> {
+    normalize_bvid_input(value)
+        .ok_or_else(|| anyhow::anyhow!("could not find a BVID in input: {}", value.trim()))
+}
+
+fn normalize_bvid_value_if_present(value: &str) -> Result<Option<String>> {
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        normalize_bvid_value(value).map(Some)
+    }
 }
 
 fn comment_formats(formats: &[OutputFormat]) -> Vec<CommentOutputFormat> {
@@ -920,14 +938,26 @@ mod tests {
     fn combines_positional_and_input_bvids() {
         let path =
             std::env::temp_dir().join(format!("bili-opinion-bvids-{}.txt", std::process::id()));
-        fs::write(&path, "\nBV_input_1\nBV_input_2\n").expect("write input");
+        fs::write(
+            &path,
+            "\nhttps://www.bilibili.com/video/BV1xx411c7mD\nBV17LwAzoEgw\n",
+        )
+        .expect("write input");
 
         let bvids =
-            collect_bvids(&["BV_positional".to_string()], &Some(path.clone())).expect("bvids");
+            collect_bvids(&["BV1yEEq68EQ3".to_string()], &Some(path.clone())).expect("bvids");
 
         fs::remove_file(path).expect("remove input");
 
-        assert_eq!(bvids, ["BV_positional", "BV_input_1", "BV_input_2"]);
+        assert_eq!(bvids, ["BV1yEEq68EQ3", "BV1xx411c7mD", "BV17LwAzoEgw"]);
+    }
+
+    #[test]
+    fn rejects_input_without_bvid() {
+        let error = collect_bvids(&["https://www.bilibili.com/video/av123".to_string()], &None)
+            .expect_err("invalid input should fail");
+
+        assert!(error.to_string().contains("could not find a BVID in input"));
     }
 
     #[test]

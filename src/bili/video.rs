@@ -4,6 +4,7 @@ use serde::Deserialize;
 use super::client::BiliClient;
 
 const VIDEO_VIEW_URL: &str = "https://api.bilibili.com/x/web-interface/view";
+const BVID_LENGTH: usize = 12;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct VideoInfo {
@@ -57,6 +58,46 @@ impl BiliClient {
         let data: VideoViewData = self.get_api(VIDEO_VIEW_URL, &[("bvid", bvid)]).await?;
         Ok(data.into())
     }
+}
+
+pub fn normalize_bvid_input(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if is_bvid(value) {
+        return Some(value.to_string());
+    }
+
+    for (start, _) in value.match_indices("BV") {
+        if !is_token_boundary(value[..start].chars().next_back()) {
+            continue;
+        }
+
+        let token = value[start..]
+            .chars()
+            .take_while(|character| character.is_ascii_alphanumeric())
+            .collect::<String>();
+
+        if is_bvid(&token) {
+            return Some(token);
+        }
+    }
+
+    None
+}
+
+fn is_bvid(value: &str) -> bool {
+    value.len() == BVID_LENGTH
+        && value.starts_with("BV")
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+}
+
+fn is_token_boundary(character: Option<char>) -> bool {
+    character.is_none_or(|character| !character.is_ascii_alphanumeric())
 }
 
 impl From<VideoViewData> for VideoInfo {
@@ -129,5 +170,41 @@ mod tests {
                 duration: 90,
             }]
         );
+    }
+
+    #[test]
+    fn normalizes_plain_bvid() {
+        assert_eq!(
+            normalize_bvid_input("  BV17LwAzoEgw  ").as_deref(),
+            Some("BV17LwAzoEgw")
+        );
+    }
+
+    #[test]
+    fn extracts_bvid_from_video_url() {
+        assert_eq!(
+            normalize_bvid_input(
+                "https://www.bilibili.com/video/BV17LwAzoEgw/?spm_id_from=333.1007"
+            )
+            .as_deref(),
+            Some("BV17LwAzoEgw")
+        );
+    }
+
+    #[test]
+    fn extracts_bvid_from_url_with_timestamp_query() {
+        assert_eq!(
+            normalize_bvid_input("https://www.bilibili.com/video/BV17LwAzoEgw?t=123").as_deref(),
+            Some("BV17LwAzoEgw")
+        );
+    }
+
+    #[test]
+    fn rejects_values_without_bvid() {
+        assert_eq!(
+            normalize_bvid_input("https://www.bilibili.com/video/av123"),
+            None
+        );
+        assert_eq!(normalize_bvid_input("BV17LwAzoEgw123"), None);
     }
 }
