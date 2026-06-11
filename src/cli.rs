@@ -1,23 +1,107 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
-use crate::app::comments::{CommentCollectionOptions, CommentOutputFormat, collect_video_comments};
-use crate::app::danmaku::{DanmakuCollectionOptions, collect_video_danmaku};
+use crate::app::collection::{
+    CollectionFailure, CollectionJobOutcome, CollectionRequest, CredentialOptions,
+    DEFAULT_COOKIE_PATH, DEFAULT_OUTPUT_ROOT, DEFAULT_REQUEST_DELAY_MS, default_cookie_header,
+    load_cookie_header, run_collection_with_events,
+};
+use crate::app::comments::CommentOutputFormat;
 use crate::bili::auth::{QrLoginStatus, render_terminal_qr};
 use crate::bili::client::BiliClient;
 use crate::bili::video::VideoInfo;
 
+const CLI_LONG_ABOUT: &str =
+    "Collect Bilibili video comments and danmaku for local opinion-analysis workflows.";
+const CLI_AFTER_HELP: &str = r#"Common workflows:
+  bili-opinion login
+  bili-opinion auth
+  bili-opinion run BV1yEEq68EQ3 --output output
+  bili-opinion comments BV1yEEq68EQ3 --format csv,jsonl
+  bili-opinion danmaku BV1yEEq68EQ3
+  bili-opinion clean
+
+Command-specific help:
+  bili-opinion help video
+  bili-opinion video --help
+  bili-opinion help run
+  bili-opinion run --help
+
+Credential behavior:
+  login writes config/bilibili-cookie.txt by default.
+  auth, video, run, comments, and danmaku read that file automatically when it exists.
+  Use --cookie FILE for another cookie file, --sessdata VALUE for a raw SESSDATA value,
+  or --anonymous to force an anonymous request.
+
+Output layout:
+  output/<BVID>/comments.csv
+  output/<BVID>/comments.jsonl
+  output/<BVID>/danmaku.jsonl
+  output/<BVID>/danmaku_segments.jsonl
+  output/failures.csv
+"#;
+
+const LOGIN_AFTER_HELP: &str = r#"Examples:
+  bili-opinion login
+  bili-opinion login --output-cookie config/bilibili-cookie.txt --timeout-seconds 180
+
+After a successful login, run `bili-opinion auth` to verify the saved cookie.
+"#;
+
+const AUTH_AFTER_HELP: &str = r#"Examples:
+  bili-opinion auth
+  bili-opinion auth --cookie config/bilibili-cookie.txt
+  bili-opinion auth --sessdata YOUR_SESSDATA
+  bili-opinion auth --anonymous
+"#;
+
+const VIDEO_AFTER_HELP: &str = r#"Examples:
+  bili-opinion video BV1yEEq68EQ3
+  bili-opinion video BV1yEEq68EQ3 --cookie config/bilibili-cookie.txt
+  bili-opinion video BV1yEEq68EQ3 --anonymous
+"#;
+
+const RUN_AFTER_HELP: &str = r#"Examples:
+  bili-opinion run BV1yEEq68EQ3 --output output
+  bili-opinion run BV1yEEq68EQ3 --format csv,jsonl --request-delay-ms 1500
+  bili-opinion run --input bvids.txt --danmaku-only
+
+This command collects comments and danmaku in one pass by default.
+"#;
+
+const COMMENTS_AFTER_HELP: &str = r#"Examples:
+  bili-opinion comments BV1yEEq68EQ3 --format csv,jsonl
+  bili-opinion comments --input bvids.txt --output output --request-delay-ms 1500
+  bili-opinion comments BV1yEEq68EQ3 --max-pages 1 --max-reply-pages 1
+
+For full collection, prefer a browser cookie and a conservative request delay.
+"#;
+
+const DANMAKU_AFTER_HELP: &str = r#"Examples:
+  bili-opinion danmaku BV1yEEq68EQ3
+  bili-opinion danmaku --input bvids.txt --output output
+  bili-opinion danmaku BV1yEEq68EQ3 --max-segments 1
+"#;
+
+const CLEAN_AFTER_HELP: &str = r#"Examples:
+  bili-opinion clean
+  bili-opinion clean --root output --archive-root doc/output-archives
+  bili-opinion clean --no-archive
+
+By default this archives the output directory under doc/output-archives first,
+then recreates an empty output directory.
+"#;
+
 #[derive(Debug, Parser)]
 #[command(name = "bili-opinion")]
-#[command(
-    version,
-    about = "Collect Bilibili video comments for opinion analysis."
-)]
+#[command(version, about = CLI_LONG_ABOUT, long_about = CLI_LONG_ABOUT)]
+#[command(after_help = CLI_AFTER_HELP)]
+#[command(arg_required_else_help = true)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -25,31 +109,33 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Check whether the current Bilibili credentials are recognized.
-    Auth(AuthArgs),
-
     /// Log in to Bilibili by scanning a QR code.
+    #[command(after_help = LOGIN_AFTER_HELP)]
     Login(LoginArgs),
 
+    /// Check whether the current Bilibili credentials are recognized.
+    #[command(after_help = AUTH_AFTER_HELP)]
+    Auth(AuthArgs),
+
     /// Fetch basic metadata for a Bilibili video.
+    #[command(after_help = VIDEO_AFTER_HELP)]
     Video(VideoArgs),
 
+    /// Collect comments and danmaku for one or more Bilibili videos.
+    #[command(after_help = RUN_AFTER_HELP)]
+    Run(RunArgs),
+
     /// Collect comments for one or more Bilibili videos.
+    #[command(after_help = COMMENTS_AFTER_HELP)]
     Comments(CommentsArgs),
 
     /// Collect danmaku for one or more Bilibili videos.
+    #[command(after_help = DANMAKU_AFTER_HELP)]
     Danmaku(DanmakuArgs),
-}
 
-#[derive(Debug, Args)]
-pub struct AuthArgs {
-    /// Read the full Bilibili Cookie header from a local file.
-    #[arg(long, value_name = "FILE")]
-    pub cookie: Option<PathBuf>,
-
-    /// Use a SESSDATA value directly. Treat this as a secret.
-    #[arg(long, value_name = "VALUE")]
-    pub sessdata: Option<String>,
+    /// Archive and clear local collection output.
+    #[command(after_help = CLEAN_AFTER_HELP)]
+    Clean(CleanArgs),
 }
 
 #[derive(Debug, Args)]
@@ -72,23 +158,24 @@ pub struct LoginArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct VideoArgs {
-    /// Bilibili video BVID, for example BV1xx411c7mD.
-    #[arg(value_name = "BVID")]
-    pub bvid: String,
-
-    /// Read the full Bilibili Cookie header from a local file.
-    #[arg(long, value_name = "FILE")]
-    pub cookie: Option<PathBuf>,
-
-    /// Use a SESSDATA value directly. Treat this as a secret.
-    #[arg(long, value_name = "VALUE")]
-    pub sessdata: Option<String>,
+pub struct AuthArgs {
+    #[command(flatten)]
+    pub credentials: CredentialArgs,
 }
 
 #[derive(Debug, Args)]
-pub struct CommentsArgs {
-    /// Bilibili video BVID values, for example BV1xx411c7mD.
+pub struct VideoArgs {
+    /// Bilibili video BVID, for example BV1yEEq68EQ3.
+    #[arg(value_name = "BVID")]
+    pub bvid: String,
+
+    #[command(flatten)]
+    pub credentials: CredentialArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    /// Bilibili video BVID values, for example BV1yEEq68EQ3.
     #[arg(value_name = "BVID")]
     pub bvids: Vec<String>,
 
@@ -96,13 +183,54 @@ pub struct CommentsArgs {
     #[arg(long, value_name = "FILE")]
     pub input: Option<PathBuf>,
 
-    /// Read the full Bilibili Cookie header from a local file.
-    #[arg(long, value_name = "FILE")]
-    pub cookie: Option<PathBuf>,
+    #[command(flatten)]
+    pub credentials: CredentialArgs,
 
-    /// Use a SESSDATA value directly. Treat this as a secret.
-    #[arg(long, value_name = "VALUE")]
-    pub sessdata: Option<String>,
+    /// Output directory for collected data.
+    #[arg(long, value_name = "DIR", default_value = "output")]
+    pub output: PathBuf,
+
+    /// Comment output format. Use comma-separated values such as csv,jsonl.
+    #[arg(long, value_enum, value_delimiter = ',', default_value = "csv,jsonl")]
+    pub format: Vec<OutputFormat>,
+
+    /// Collect only comments.
+    #[arg(long, conflicts_with = "danmaku_only")]
+    pub comments_only: bool,
+
+    /// Collect only danmaku.
+    #[arg(long, conflicts_with = "comments_only")]
+    pub danmaku_only: bool,
+
+    /// Limit main comment pages. Useful for smoke tests.
+    #[arg(long, value_name = "N")]
+    pub max_pages: Option<usize>,
+
+    /// Limit secondary comment pages per root comment. Useful for smoke tests.
+    #[arg(long, value_name = "N")]
+    pub max_reply_pages: Option<usize>,
+
+    /// Limit danmaku segments per video page. Useful for smoke tests.
+    #[arg(long, value_name = "N")]
+    pub max_segments: Option<u64>,
+
+    /// Delay between Bilibili page/segment requests in milliseconds.
+    #[arg(long, value_name = "MS", default_value_t = DEFAULT_REQUEST_DELAY_MS)]
+    pub request_delay_ms: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct CommentsArgs {
+    /// Bilibili video BVID values, for example BV1yEEq68EQ3.
+    #[arg(value_name = "BVID")]
+    pub bvids: Vec<String>,
+
+    /// Read BVID values from a UTF-8 text file, one BVID per line.
+    #[arg(long, value_name = "FILE")]
+    pub input: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub credentials: CredentialArgs,
 
     /// Output directory for collected comments.
     #[arg(long, value_name = "DIR", default_value = "output")]
@@ -121,13 +249,13 @@ pub struct CommentsArgs {
     pub max_reply_pages: Option<usize>,
 
     /// Delay between comment page requests in milliseconds.
-    #[arg(long, value_name = "MS", default_value_t = 500)]
+    #[arg(long, value_name = "MS", default_value_t = DEFAULT_REQUEST_DELAY_MS)]
     pub request_delay_ms: u64,
 }
 
 #[derive(Debug, Args)]
 pub struct DanmakuArgs {
-    /// Bilibili video BVID values, for example BV1xx411c7mD.
+    /// Bilibili video BVID values, for example BV1yEEq68EQ3.
     #[arg(value_name = "BVID")]
     pub bvids: Vec<String>,
 
@@ -135,13 +263,8 @@ pub struct DanmakuArgs {
     #[arg(long, value_name = "FILE")]
     pub input: Option<PathBuf>,
 
-    /// Read the full Bilibili Cookie header from a local file.
-    #[arg(long, value_name = "FILE")]
-    pub cookie: Option<PathBuf>,
-
-    /// Use a SESSDATA value directly. Treat this as a secret.
-    #[arg(long, value_name = "VALUE")]
-    pub sessdata: Option<String>,
+    #[command(flatten)]
+    pub credentials: CredentialArgs,
 
     /// Output directory for collected danmaku.
     #[arg(long, value_name = "DIR", default_value = "output")]
@@ -152,8 +275,38 @@ pub struct DanmakuArgs {
     pub max_segments: Option<u64>,
 
     /// Delay between danmaku segment requests in milliseconds.
-    #[arg(long, value_name = "MS", default_value_t = 500)]
+    #[arg(long, value_name = "MS", default_value_t = DEFAULT_REQUEST_DELAY_MS)]
     pub request_delay_ms: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct CleanArgs {
+    /// Output directory to archive and clear.
+    #[arg(long, value_name = "DIR", default_value = "output")]
+    pub root: PathBuf,
+
+    /// Directory that receives archived output snapshots.
+    #[arg(long, value_name = "DIR", default_value = "doc/output-archives")]
+    pub archive_root: PathBuf,
+
+    /// Delete output without first archiving it.
+    #[arg(long)]
+    pub no_archive: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CredentialArgs {
+    /// Read the full Bilibili Cookie header from a local file.
+    #[arg(long, value_name = "FILE")]
+    pub cookie: Option<PathBuf>,
+
+    /// Use a SESSDATA value directly. Treat this as a secret.
+    #[arg(long, value_name = "VALUE")]
+    pub sessdata: Option<String>,
+
+    /// Force anonymous requests even when config/bilibili-cookie.txt exists.
+    #[arg(long)]
+    pub anonymous: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -173,11 +326,13 @@ impl From<OutputFormat> for CommentOutputFormat {
 
 pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Commands::Auth(args) => run_auth(args).await,
         Commands::Login(args) => run_login(args).await,
+        Commands::Auth(args) => run_auth(args).await,
         Commands::Video(args) => run_video(args).await,
+        Commands::Run(args) => run_all(args).await,
         Commands::Comments(args) => run_comments(args).await,
         Commands::Danmaku(args) => run_danmaku(args).await,
+        Commands::Clean(args) => run_clean(args),
     }
 }
 
@@ -212,6 +367,8 @@ async fn run_login(args: LoginArgs) -> Result<()> {
                 save_cookie_header(&args.output_cookie, &cookie_header)?;
                 println!("status: logged_in");
                 println!("cookie_saved: {}", args.output_cookie.display());
+                println!("next_auth_check: bili-opinion auth");
+                println!("next_collection: bili-opinion run BV1yEEq68EQ3 --output output");
                 break;
             }
         }
@@ -221,10 +378,13 @@ async fn run_login(args: LoginArgs) -> Result<()> {
 }
 
 async fn run_auth(args: AuthArgs) -> Result<()> {
-    let cookie_header = load_cookie_header(&args.cookie, &args.sessdata)?;
+    let credentials = credential_options(&args.credentials);
+    let credential_source = credential_source(&credentials);
+    let cookie_header = load_cookie_header(&credentials)?;
     let client = BiliClient::new(cookie_header)?;
     let login = client.login_state().await?;
 
+    println!("credential_source: {credential_source}");
     println!("logged_in: {}", login.is_login);
     println!(
         "mid: {}",
@@ -236,6 +396,137 @@ async fn run_auth(args: AuthArgs) -> Result<()> {
     println!("uname: {}", login.uname.as_deref().unwrap_or("<none>"));
     println!("vip_status: {}", login.vip_status);
 
+    Ok(())
+}
+
+async fn run_video(args: VideoArgs) -> Result<()> {
+    let credentials = credential_options(&args.credentials);
+    let cookie_header = load_cookie_header(&credentials)?;
+    let client = BiliClient::new(cookie_header)?;
+    let video = client.video_info(&args.bvid).await?;
+    print_video_info(&video);
+    Ok(())
+}
+
+async fn run_all(args: RunArgs) -> Result<()> {
+    let request = CollectionRequest {
+        bvids: collect_bvids(&args.bvids, &args.input)?,
+        credentials: credential_options(&args.credentials),
+        output: args.output,
+        collect_comments: !args.danmaku_only,
+        collect_danmaku: !args.comments_only,
+        comment_formats: comment_formats(&args.format),
+        max_comment_pages: args.max_pages,
+        max_reply_pages: args.max_reply_pages,
+        max_danmaku_segments: args.max_segments,
+        request_delay: request_delay(args.request_delay_ms),
+    };
+    run_collection_request(request).await
+}
+
+async fn run_comments(args: CommentsArgs) -> Result<()> {
+    let request = CollectionRequest {
+        bvids: collect_bvids(&args.bvids, &args.input)?,
+        credentials: credential_options(&args.credentials),
+        output: args.output,
+        collect_comments: true,
+        collect_danmaku: false,
+        comment_formats: comment_formats(&args.format),
+        max_comment_pages: args.max_pages,
+        max_reply_pages: args.max_reply_pages,
+        max_danmaku_segments: None,
+        request_delay: request_delay(args.request_delay_ms),
+    };
+    run_collection_request(request).await
+}
+
+async fn run_danmaku(args: DanmakuArgs) -> Result<()> {
+    let request = CollectionRequest {
+        bvids: collect_bvids(&args.bvids, &args.input)?,
+        credentials: credential_options(&args.credentials),
+        output: args.output,
+        collect_comments: false,
+        collect_danmaku: true,
+        comment_formats: vec![CommentOutputFormat::Csv],
+        max_comment_pages: None,
+        max_reply_pages: None,
+        max_danmaku_segments: args.max_segments,
+        request_delay: request_delay(args.request_delay_ms),
+    };
+    run_collection_request(request).await
+}
+
+async fn run_collection_request(request: CollectionRequest) -> Result<()> {
+    println!(
+        "credential_source: {}",
+        credential_source(&request.credentials)
+    );
+    println!("output_root: {}", request.output.display());
+
+    let outcome = run_collection_with_events(&request, |_| Ok(())).await?;
+    for job in &outcome.jobs {
+        print_collection_job(job);
+    }
+
+    if !outcome.failures.is_empty() {
+        for failure in &outcome.failures {
+            eprintln!(
+                "failed to collect {} for {}: {}",
+                failure.kind.as_str(),
+                failure.bvid,
+                failure.error
+            );
+        }
+        let path = write_failure_report(&request.output, &outcome.failures)?;
+        eprintln!("failure_report: {}", path.display());
+    }
+
+    outcome.ensure_success()
+}
+
+fn run_clean(args: CleanArgs) -> Result<()> {
+    if !args.root.exists() {
+        println!("clean_target: {}", args.root.display());
+        println!("status: nothing_to_clean");
+        return Ok(());
+    }
+
+    ensure_clean_target(&args.root)?;
+    let summary = summarize_tree(&args.root)?;
+    println!("clean_target: {}", args.root.display());
+    println!("files: {}", summary.files);
+    println!("directories: {}", summary.directories);
+    println!("bytes: {}", summary.bytes);
+
+    if args.no_archive {
+        fs::remove_dir_all(&args.root)
+            .with_context(|| format!("failed to remove {}", args.root.display()))?;
+        fs::create_dir_all(&args.root)
+            .with_context(|| format!("failed to recreate {}", args.root.display()))?;
+        println!("status: deleted_without_archive");
+        return Ok(());
+    }
+
+    fs::create_dir_all(&args.archive_root)
+        .with_context(|| format!("failed to create {}", args.archive_root.display()))?;
+    let archive_path = unique_archive_path(&args.archive_root, &args.root)?;
+    fs::rename(&args.root, &archive_path).with_context(|| {
+        format!(
+            "failed to archive {} to {}",
+            args.root.display(),
+            archive_path.display()
+        )
+    })?;
+    write_clean_manifest(&archive_path, &args.root, &summary)?;
+    fs::create_dir_all(&args.root)
+        .with_context(|| format!("failed to recreate {}", args.root.display()))?;
+
+    println!("archive: {}", archive_path.display());
+    println!(
+        "manifest: {}",
+        archive_path.join("CLEAN_MANIFEST.txt").display()
+    );
+    println!("status: archived_and_cleaned");
     Ok(())
 }
 
@@ -258,125 +549,29 @@ fn save_cookie_header(path: &Path, cookie_header: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run_video(args: VideoArgs) -> Result<()> {
-    let cookie_header = load_cookie_header(&args.cookie, &args.sessdata)?;
-    let client = BiliClient::new(cookie_header)?;
-    let video = client.video_info(&args.bvid).await?;
-    print_video_info(&video);
-    Ok(())
+fn credential_options(args: &CredentialArgs) -> CredentialOptions {
+    CredentialOptions {
+        cookie: args.cookie.clone(),
+        sessdata: args.sessdata.clone(),
+        anonymous: args.anonymous,
+    }
 }
 
-async fn run_comments(args: CommentsArgs) -> Result<()> {
-    let bvids = collect_bvids(&args.bvids, &args.input)?;
-    let cookie_header = load_cookie_header(&args.cookie, &args.sessdata)?;
-    let client = BiliClient::new(cookie_header)?;
-    let mut failures = Vec::new();
-    let options = CommentCollectionOptions {
-        output: args.output.clone(),
-        formats: args
-            .format
-            .iter()
-            .copied()
-            .map(CommentOutputFormat::from)
-            .collect(),
-        max_pages: args.max_pages,
-        max_reply_pages: args.max_reply_pages,
-        request_delay: request_delay(args.request_delay_ms),
-    };
-
-    for bvid in bvids {
-        match collect_video_comments(&client, &bvid, &options).await {
-            Ok(outcome) => {
-                println!(
-                    "scanned {} comments and appended {} new comments for {} (expected_total: {}, main_pages: {}, reply_pages: {}, next_cursor: {})",
-                    outcome.summary.comments_scanned,
-                    outcome.appended_count,
-                    outcome.bvid,
-                    outcome.expected_total,
-                    outcome.summary.main_pages_scanned,
-                    outcome.summary.reply_pages_scanned,
-                    outcome.summary.next_cursor.as_deref().unwrap_or("<none>")
-                );
-                for output in outcome.outputs {
-                    println!(
-                        "output: {} (appended: {})",
-                        output.path.display(),
-                        output.appended_count
-                    );
-                }
-            }
-            Err(error) => {
-                eprintln!("failed to collect {bvid}: {error}");
-                failures.push(VideoFailure {
-                    bvid,
-                    error: error.to_string(),
-                });
-            }
-        }
+fn credential_source(credentials: &CredentialOptions) -> String {
+    if credentials.anonymous {
+        return "anonymous (--anonymous)".to_string();
     }
-
-    if !failures.is_empty() {
-        let path = write_failure_report(&args.output, &failures)?;
-        eprintln!("failure_report: {}", path.display());
-        bail!("{} video(s) failed", failures.len());
+    if let Some(path) = &credentials.cookie {
+        return format!("cookie file: {}", path.display());
     }
-
-    Ok(())
-}
-
-async fn run_danmaku(args: DanmakuArgs) -> Result<()> {
-    let bvids = collect_bvids(&args.bvids, &args.input)?;
-    let cookie_header = load_cookie_header(&args.cookie, &args.sessdata)?;
-    let client = BiliClient::new(cookie_header)?;
-    let mut failures = Vec::new();
-    let options = DanmakuCollectionOptions {
-        output: args.output.clone(),
-        max_segments: args.max_segments,
-        request_delay: request_delay(args.request_delay_ms),
-    };
-
-    for bvid in bvids {
-        match collect_video_danmaku(&client, &bvid, &options).await {
-            Ok(outcome) => {
-                println!(
-                    "scanned {} danmaku records and appended {} new records for {} (segments_scanned: {}, segments_appended: {})",
-                    outcome.records_scanned,
-                    outcome.records_appended,
-                    outcome.bvid,
-                    outcome.segments_scanned,
-                    outcome.segments_appended
-                );
-                println!("output: {}", outcome.record_path.display());
-                println!(
-                    "segment_metadata: {}",
-                    outcome.segment_metadata_path.display()
-                );
-            }
-            Err(error) => {
-                eprintln!("failed to collect danmaku {bvid}: {error}");
-                failures.push(VideoFailure {
-                    bvid,
-                    error: error.to_string(),
-                });
-            }
-        }
+    if credentials.sessdata.is_some() {
+        return "--sessdata".to_string();
     }
-
-    if !failures.is_empty() {
-        let path = write_failure_report(&args.output, &failures)?;
-        eprintln!("failure_report: {}", path.display());
-        bail!("{} video(s) failed", failures.len());
+    if default_cookie_header().ok().flatten().is_some() {
+        format!("default cookie file: {DEFAULT_COOKIE_PATH}")
+    } else {
+        format!("anonymous (no {DEFAULT_COOKIE_PATH} found)")
     }
-
-    Ok(())
-}
-
-#[derive(Debug, Serialize)]
-struct VideoFailure {
-    #[serde(rename = "Bvid")]
-    bvid: String,
-    #[serde(rename = "Error")]
-    error: String,
 }
 
 fn request_delay(milliseconds: u64) -> Option<Duration> {
@@ -413,44 +608,76 @@ fn collect_bvids(positional: &[String], input: &Option<PathBuf>) -> Result<Vec<S
     Ok(bvids)
 }
 
-fn load_cookie_header(
-    cookie: &Option<PathBuf>,
-    sessdata: &Option<String>,
-) -> Result<Option<String>> {
-    match (cookie, sessdata) {
-        (Some(_), Some(_)) => bail!("use either --cookie or --sessdata, not both"),
-        (Some(path), None) => {
-            let content = fs::read_to_string(path)
-                .map(|value| value.trim().to_string())
-                .map_err(anyhow::Error::from)?;
-
-            if content.is_empty() {
-                bail!("cookie file is empty: {}", path.display());
-            }
-
-            Ok(Some(content))
-        }
-        (None, Some(value)) => {
-            let sessdata = value.trim();
-            if sessdata.is_empty() {
-                bail!("--sessdata cannot be empty");
-            }
-
-            Ok(Some(format!("SESSDATA={sessdata}")))
-        }
-        (None, None) => Ok(None),
-    }
+fn comment_formats(formats: &[OutputFormat]) -> Vec<CommentOutputFormat> {
+    formats
+        .iter()
+        .copied()
+        .map(CommentOutputFormat::from)
+        .collect()
 }
 
-fn write_failure_report(output_root: &Path, failures: &[VideoFailure]) -> Result<PathBuf> {
+#[derive(Debug, Serialize)]
+struct FailureReportRow {
+    #[serde(rename = "Kind")]
+    kind: String,
+    #[serde(rename = "Bvid")]
+    bvid: String,
+    #[serde(rename = "Error")]
+    error: String,
+}
+
+fn write_failure_report(output_root: &Path, failures: &[CollectionFailure]) -> Result<PathBuf> {
     fs::create_dir_all(output_root)?;
     let path = output_root.join("failures.csv");
     let mut writer = csv::Writer::from_path(&path)?;
     for failure in failures {
-        writer.serialize(failure)?;
+        writer.serialize(FailureReportRow {
+            kind: failure.kind.as_str().to_string(),
+            bvid: failure.bvid.clone(),
+            error: failure.error.clone(),
+        })?;
     }
     writer.flush()?;
     Ok(path)
+}
+
+fn print_collection_job(job: &CollectionJobOutcome) {
+    match job {
+        CollectionJobOutcome::Comments(outcome) => {
+            println!(
+                "comments: scanned {} comments and appended {} new comments for {} (expected_total: {}, main_pages: {}, reply_pages: {}, next_cursor: {})",
+                outcome.summary.comments_scanned,
+                outcome.appended_count,
+                outcome.bvid,
+                outcome.expected_total,
+                outcome.summary.main_pages_scanned,
+                outcome.summary.reply_pages_scanned,
+                outcome.summary.next_cursor.as_deref().unwrap_or("<none>")
+            );
+            for output in &outcome.outputs {
+                println!(
+                    "output: {} (appended: {})",
+                    output.path.display(),
+                    output.appended_count
+                );
+            }
+        }
+        CollectionJobOutcome::Danmaku(outcome) => {
+            println!(
+                "danmaku: scanned {} records and appended {} new records for {} (segments_scanned: {}, segments_appended: {})",
+                outcome.records_scanned,
+                outcome.records_appended,
+                outcome.bvid,
+                outcome.segments_scanned,
+                outcome.segments_appended
+            );
+            println!("output: {}", outcome.record_path.display());
+            println!(
+                "segment_metadata: {}",
+                outcome.segment_metadata_path.display()
+            );
+        }
+    }
 }
 
 fn print_video_info(video: &VideoInfo) {
@@ -470,6 +697,137 @@ fn print_video_info(video: &VideoInfo) {
     }
 }
 
+#[derive(Debug, Default)]
+struct TreeSummary {
+    files: usize,
+    directories: usize,
+    bytes: u64,
+    paths: Vec<PathBuf>,
+}
+
+fn ensure_clean_target(root: &Path) -> Result<()> {
+    if !root.is_dir() {
+        bail!("clean target is not a directory: {}", root.display());
+    }
+
+    let current_dir = std::env::current_dir()?.canonicalize()?;
+    let target = root.canonicalize()?;
+
+    if target == current_dir {
+        bail!("refusing to clean the workspace root: {}", root.display());
+    }
+    if !target.starts_with(&current_dir) {
+        bail!(
+            "clean target must be inside the current workspace: {}",
+            root.display()
+        );
+    }
+    if target.file_name().is_none() {
+        bail!("refusing to clean filesystem root: {}", root.display());
+    }
+
+    Ok(())
+}
+
+fn summarize_tree(root: &Path) -> Result<TreeSummary> {
+    let mut summary = TreeSummary::default();
+    summarize_tree_entry(root, root, &mut summary)?;
+    Ok(summary)
+}
+
+fn summarize_tree_entry(root: &Path, path: &Path, summary: &mut TreeSummary) -> Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = entry.metadata()?;
+        let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+
+        if metadata.is_dir() {
+            summary.directories += 1;
+            summary.paths.push(relative_path);
+            summarize_tree_entry(root, &path, summary)?;
+        } else {
+            summary.files += 1;
+            summary.bytes += metadata.len();
+            summary.paths.push(relative_path);
+        }
+    }
+    Ok(())
+}
+
+fn unique_archive_path(archive_root: &Path, root: &Path) -> Result<PathBuf> {
+    let root_name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(DEFAULT_OUTPUT_ROOT);
+    let timestamp = current_utc_archive_timestamp()?;
+    let base_name = format!("{root_name}-archive-{timestamp}");
+    let mut candidate = archive_root.join(&base_name);
+    let mut suffix = 1;
+
+    while candidate.exists() {
+        candidate = archive_root.join(format!("{base_name}-{suffix}"));
+        suffix += 1;
+    }
+
+    Ok(candidate)
+}
+
+fn current_utc_archive_timestamp() -> Result<String> {
+    let seconds = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    Ok(format_unix_timestamp_utc(seconds))
+}
+
+fn format_unix_timestamp_utc(seconds: u64) -> String {
+    let days = (seconds / 86_400) as i64;
+    let seconds_of_day = (seconds % 86_400) as u32;
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+
+    format!("{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}Z")
+}
+
+fn civil_from_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
+    let z = days_since_unix_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+
+    (year as i32, month as u32, day as u32)
+}
+
+fn write_clean_manifest(
+    archive_path: &Path,
+    original_root: &Path,
+    summary: &TreeSummary,
+) -> Result<()> {
+    let mut content = String::new();
+    content.push_str("Bilibili Opinion Insights output cleanup manifest\n");
+    content.push_str(&format!("original_root: {}\n", original_root.display()));
+    content.push_str(&format!("archive_path: {}\n", archive_path.display()));
+    content.push_str(&format!("files: {}\n", summary.files));
+    content.push_str(&format!("directories: {}\n", summary.directories));
+    content.push_str(&format!("bytes: {}\n", summary.bytes));
+    content.push_str("\nArchived paths:\n");
+    for path in &summary.paths {
+        content.push_str(&format!("{}\n", path.display()));
+    }
+
+    fs::write(archive_path.join("CLEAN_MANIFEST.txt"), content)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,6 +836,20 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn parses_run_command_with_default_collection_plan() {
+        let cli = Cli::parse_from(["bili-opinion", "run", "BV1yEEq68EQ3"]);
+
+        let Commands::Run(args) = cli.command else {
+            panic!("expected run command");
+        };
+        assert_eq!(args.bvids, ["BV1yEEq68EQ3"]);
+        assert!(!args.comments_only);
+        assert!(!args.danmaku_only);
+        assert_eq!(args.format, [OutputFormat::Csv, OutputFormat::Jsonl]);
+        assert_eq!(args.output, PathBuf::from(DEFAULT_OUTPUT_ROOT));
     }
 
     #[test]
@@ -509,8 +881,8 @@ mod tests {
         };
 
         assert_eq!(args.bvid, "BV1xx411c7mD");
-        assert!(args.cookie.is_none());
-        assert!(args.sessdata.is_none());
+        assert!(args.credentials.cookie.is_none());
+        assert!(args.credentials.sessdata.is_none());
     }
 
     #[test]
@@ -521,8 +893,8 @@ mod tests {
             panic!("expected auth command");
         };
 
-        assert!(args.cookie.is_none());
-        assert_eq!(args.sessdata.as_deref(), Some("sample"));
+        assert!(args.credentials.cookie.is_none());
+        assert_eq!(args.credentials.sessdata.as_deref(), Some("sample"));
     }
 
     #[test]
@@ -542,14 +914,6 @@ mod tests {
 
         assert_eq!(args.output_cookie, PathBuf::from("config/test-cookie.txt"));
         assert_eq!(args.timeout_seconds, 5);
-    }
-
-    #[test]
-    fn formats_sessdata_as_cookie_header() {
-        let cookie =
-            load_cookie_header(&None, &Some("sample_sessdata".to_string())).expect("cookie header");
-
-        assert_eq!(cookie, Some("SESSDATA=sample_sessdata".to_string()));
     }
 
     #[test]
@@ -582,5 +946,25 @@ mod tests {
 
         assert_eq!(args.bvids, ["BV1xx411c7mD"]);
         assert_eq!(args.max_segments, Some(1));
+    }
+
+    #[test]
+    fn clean_archive_path_uses_output_name() {
+        let archive_root = std::env::temp_dir().join("bili-opinion-archives");
+        let archive =
+            unique_archive_path(&archive_root, Path::new("output")).expect("archive path");
+
+        assert!(
+            archive
+                .file_name()
+                .and_then(|value| value.to_str())
+                .expect("file name")
+                .starts_with("output-archive-")
+        );
+    }
+
+    #[test]
+    fn formats_unix_timestamp_as_utc_archive_label() {
+        assert_eq!(format_unix_timestamp_utc(1_781_202_781), "20260611-183301Z");
     }
 }

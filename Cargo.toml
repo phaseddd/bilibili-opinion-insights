@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Collect Bilibili video comments for opinion analysis."
 publish = false
+default-run = "bili-opinion"
 
 [features]
 default = []

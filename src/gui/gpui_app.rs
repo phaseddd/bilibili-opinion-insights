@@ -1,9 +1,8 @@
-use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use gpui::{
     App, AppContext as _, Application, Bounds, ClickEvent, Context, Entity, IntoElement,
     ParentElement, Render, SharedString, Styled as _, Window, WindowBounds, WindowOptions, div, px,
@@ -19,15 +18,12 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::app::comments::{
-    CommentCollectionOptions, CommentOutputFormat, collect_video_comments_with_events,
+use crate::app::collection::{
+    CollectionJobOutcome, CollectionRequest, CredentialOptions, DEFAULT_COOKIE_PATH,
+    DEFAULT_OUTPUT_ROOT, DEFAULT_REQUEST_DELAY, run_collection_with_events,
 };
-use crate::app::danmaku::{DanmakuCollectionOptions, collect_video_danmaku_with_events};
+use crate::app::comments::CommentOutputFormat;
 use crate::app::events::CollectionEvent;
-use crate::bili::client::BiliClient;
-
-const DEFAULT_OUTPUT: &str = "output";
-const DEFAULT_REQUEST_DELAY: Duration = Duration::from_millis(500);
 
 pub fn run() {
     Application::new().run(|cx: &mut App| {
@@ -92,13 +88,13 @@ impl BiliOpinionGui {
         });
         let cookie_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("config/bilibili-cookie.txt")
-                .default_value("config/bilibili-cookie.txt")
+                .placeholder(DEFAULT_COOKIE_PATH)
+                .default_value(DEFAULT_COOKIE_PATH)
         });
         let output_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(DEFAULT_OUTPUT)
-                .default_value(DEFAULT_OUTPUT)
+                .placeholder(DEFAULT_OUTPUT_ROOT)
+                .default_value(DEFAULT_OUTPUT_ROOT)
         });
 
         Self {
@@ -141,7 +137,7 @@ impl BiliOpinionGui {
         let cookie = trimmed_input(&self.cookie_input, cx).map(PathBuf::from);
         let output = trimmed_input(&self.output_input, cx)
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_OUTPUT));
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_OUTPUT_ROOT));
 
         Ok(CollectionDraft {
             bvids,
@@ -297,90 +293,63 @@ fn run_collection_blocking(draft: CollectionDraft, sender: mpsc::Sender<GuiMessa
 }
 
 async fn run_collection(draft: CollectionDraft, sender: mpsc::Sender<GuiMessage>) -> Result<()> {
-    let cookie_header = load_cookie_header(draft.cookie.as_ref())?;
-    let client = BiliClient::new(cookie_header)?;
-    let mut failures = Vec::new();
-
-    for bvid in &draft.bvids {
-        if draft.collect_comments {
-            let sender_for_events = sender.clone();
-            let options = CommentCollectionOptions {
-                output: draft.output.clone(),
-                formats: comment_formats(&draft),
-                max_pages: None,
-                max_reply_pages: None,
-                request_delay: Some(DEFAULT_REQUEST_DELAY),
-            };
-            match collect_video_comments_with_events(&client, bvid, &options, move |event| {
-                let _ = sender_for_events.send(GuiMessage::Event(event));
-                Ok(())
-            })
-            .await
-            {
-                Ok(outcome) => {
-                    let _ = sender.send(GuiMessage::Log(format!(
-                        "comments done: {} scanned={}, appended={}",
-                        outcome.bvid, outcome.summary.comments_scanned, outcome.appended_count
-                    )));
-                }
-                Err(error) => {
-                    failures.push(format!("comments {bvid}: {error}"));
-                    let _ =
-                        sender.send(GuiMessage::Log(format!("comments failed: {bvid}: {error}")));
-                }
-            }
-            let _ = sender.send(GuiMessage::UnitFinished);
-        }
-
-        if draft.collect_danmaku {
-            let sender_for_events = sender.clone();
-            let options = DanmakuCollectionOptions {
-                output: draft.output.clone(),
-                max_segments: None,
-                request_delay: Some(DEFAULT_REQUEST_DELAY),
-            };
-            match collect_video_danmaku_with_events(&client, bvid, &options, move |event| {
-                let _ = sender_for_events.send(GuiMessage::Event(event));
-                Ok(())
-            })
-            .await
-            {
-                Ok(outcome) => {
-                    let _ = sender.send(GuiMessage::Log(format!(
-                        "danmaku done: {} scanned={}, appended={}, segments={}",
-                        outcome.bvid,
-                        outcome.records_scanned,
-                        outcome.records_appended,
-                        outcome.segments_scanned
-                    )));
-                }
-                Err(error) => {
-                    failures.push(format!("danmaku {bvid}: {error}"));
-                    let _ =
-                        sender.send(GuiMessage::Log(format!("danmaku failed: {bvid}: {error}")));
-                }
-            }
-            let _ = sender.send(GuiMessage::UnitFinished);
-        }
-    }
-
-    if failures.is_empty() {
+    let comment_formats = comment_formats(&draft);
+    let request = CollectionRequest {
+        bvids: draft.bvids,
+        credentials: CredentialOptions {
+            cookie: draft.cookie,
+            sessdata: None,
+            anonymous: false,
+        },
+        output: draft.output,
+        collect_comments: draft.collect_comments,
+        collect_danmaku: draft.collect_danmaku,
+        comment_formats,
+        max_comment_pages: None,
+        max_reply_pages: None,
+        max_danmaku_segments: None,
+        request_delay: Some(DEFAULT_REQUEST_DELAY),
+    };
+    let sender_for_events = sender.clone();
+    let outcome = run_collection_with_events(&request, move |event| {
+        let _ = sender_for_events.send(GuiMessage::Event(event));
         Ok(())
-    } else {
-        bail!("{} collection job(s) failed", failures.len())
+    })
+    .await?;
+
+    for job in &outcome.jobs {
+        let _ = sender.send(GuiMessage::Log(format_collection_job(job)));
+        let _ = sender.send(GuiMessage::UnitFinished);
     }
+
+    for failure in &outcome.failures {
+        let _ = sender.send(GuiMessage::Log(format!(
+            "{} failed: {}: {}",
+            failure.kind.as_str(),
+            failure.bvid,
+            failure.error
+        )));
+        let _ = sender.send(GuiMessage::UnitFinished);
+    }
+
+    outcome.ensure_success()
 }
 
-fn load_cookie_header(cookie_path: Option<&PathBuf>) -> Result<Option<String>> {
-    match cookie_path {
-        Some(path) => {
-            let content = fs::read_to_string(path)?.trim().to_string();
-            if content.is_empty() {
-                bail!("cookie file is empty: {}", path.display());
-            }
-            Ok(Some(content))
+fn format_collection_job(job: &CollectionJobOutcome) -> String {
+    match job {
+        CollectionJobOutcome::Comments(outcome) => {
+            format!(
+                "comments done: {} scanned={}, appended={}",
+                outcome.bvid, outcome.summary.comments_scanned, outcome.appended_count
+            )
         }
-        None => Ok(None),
+        CollectionJobOutcome::Danmaku(outcome) => format!(
+            "danmaku done: {} scanned={}, appended={}, segments={}",
+            outcome.bvid,
+            outcome.records_scanned,
+            outcome.records_appended,
+            outcome.segments_scanned
+        ),
     }
 }
 
