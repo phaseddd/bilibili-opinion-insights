@@ -6,13 +6,12 @@ use std::time::Duration;
 use anyhow::Result;
 use gpui::{
     App, AppContext as _, Application, Bounds, ClickEvent, Context, Entity, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement, Render, SharedString, Styled as _, Window,
-    WindowBounds, WindowOptions, div, hsla, linear_color_stop, linear_gradient,
-    prelude::FluentBuilder as _, px, relative, rgb, size,
+    InteractiveElement as _, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowBounds, WindowOptions, div, hsla,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, relative, rgb, size,
 };
 use gpui_component::{
-    Disableable as _, Root,
-    button::{Button, ButtonVariants as _},
+    Root,
     checkbox::Checkbox,
     h_flex,
     input::{Input, InputState},
@@ -34,10 +33,10 @@ pub fn run() {
     Application::new().run(|cx: &mut App| {
         gpui_component::init(cx);
 
-        let bounds = Bounds::centered(None, size(px(1180.), px(780.)), cx);
+        let bounds = Bounds::centered(None, size(px(1360.), px(820.)), cx);
         cx.open_window(
             WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_bounds: Some(WindowBounds::Maximized(bounds)),
                 ..Default::default()
             },
             |window, cx| {
@@ -767,7 +766,7 @@ impl Render for BiliOpinionGui {
                     .child(
                         v_flex()
                             .flex_1()
-                            .min_w(px(420.))
+                            .min_w(px(0.))
                             .h_full()
                             .gap(px(14.))
                             .child(self.render_progress_panel(&palette))
@@ -796,6 +795,8 @@ impl BiliOpinionGui {
             .bg(palette.surface)
             .child(
                 h_flex()
+                    .flex_1()
+                    .min_w(px(0.))
                     .gap(px(12.))
                     .items_center()
                     .child(product_mark(palette))
@@ -818,32 +819,47 @@ impl BiliOpinionGui {
             )
             .child(
                 h_flex()
+                    .flex_shrink_0()
                     .gap(px(8.))
                     .child(
-                        Button::new("clear-log")
-                            .ghost()
-                            .label("清空")
-                            .disabled(self.task.phase.is_busy())
-                            .on_click(cx.listener(Self::clear_log)),
+                        header_action_button("清空", HeaderActionKind::Ghost, can_start, palette)
+                            .id("clear-log-action")
+                            .when(can_start, |this| {
+                                this.cursor_pointer().on_click(cx.listener(Self::clear_log))
+                            }),
                     )
                     .child(
-                        Button::new("cancel-collection")
-                            .outline()
-                            .label("取消")
-                            .disabled(self.task.phase != TaskPhase::Running)
-                            .on_click(cx.listener(Self::request_cancel)),
+                        header_action_button(
+                            "取消",
+                            HeaderActionKind::Outline,
+                            self.task.phase == TaskPhase::Running,
+                            palette,
+                        )
+                        .id("cancel-collection-action")
+                        .when(
+                            self.task.phase == TaskPhase::Running,
+                            |this| {
+                                this.cursor_pointer()
+                                    .on_click(cx.listener(Self::request_cancel))
+                            },
+                        ),
                     )
                     .child(
-                        Button::new("start-collection")
-                            .primary()
-                            .label(if self.task.phase.is_busy() {
+                        header_action_button(
+                            if self.task.phase.is_busy() {
                                 "运行中"
                             } else {
                                 "开始采集"
-                            })
-                            .loading(self.task.phase.is_busy())
-                            .disabled(!can_start)
-                            .on_click(cx.listener(Self::start_collection)),
+                            },
+                            HeaderActionKind::Primary,
+                            can_start,
+                            palette,
+                        )
+                        .id("start-collection-action")
+                        .when(can_start, |this| {
+                            this.cursor_pointer()
+                                .on_click(cx.listener(Self::start_collection))
+                        }),
                     ),
             )
     }
@@ -854,9 +870,13 @@ impl BiliOpinionGui {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         panel(palette)
-            .w(px(420.))
+            .w(relative(0.3))
+            .min_w(px(360.))
+            .max_w(px(480.))
+            .flex_shrink_0()
             .h_full()
             .gap(px(16.))
+            .overflow_y_scrollbar()
             .child(panel_title("采集设置", "输入视频、凭据和输出选项", palette))
             .child(form_section(
                 "视频列表",
@@ -919,11 +939,9 @@ impl BiliOpinionGui {
     }
 
     fn render_auth_strip(&self, palette: &Palette) -> impl IntoElement {
-        h_flex()
+        v_flex()
             .w_full()
-            .items_center()
-            .justify_between()
-            .gap(px(10.))
+            .gap(px(8.))
             .p(px(12.))
             .rounded(px(10.))
             .border_1()
@@ -931,28 +949,31 @@ impl BiliOpinionGui {
             .bg(palette.surface_soft)
             .child(
                 h_flex()
-                    .gap(px(10.))
+                    .w_full()
                     .items_center()
-                    .child(status_dot(palette.accent))
+                    .justify_between()
+                    .gap(px(10.))
                     .child(
-                        v_flex()
-                            .gap(px(3.))
+                        h_flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .child(status_dot(palette.accent))
                             .child(
                                 div()
                                     .text_size(px(12.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("登录态"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(palette.muted)
-                                    .line_height(relative(1.25))
-                                    .child(auth_mode_copy(self.auth.mode)),
                             ),
-                    ),
+                    )
+                    .child(status_badge("扫码待接入", EventKind::Warning, palette)),
             )
-            .child(status_badge("扫码待接入", EventKind::Warning, palette))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(palette.muted)
+                    .line_height(relative(1.25))
+                    .child(auth_mode_copy(self.auth.mode)),
+            )
     }
 
     fn render_progress_panel(&self, palette: &Palette) -> impl IntoElement {
@@ -979,32 +1000,38 @@ impl BiliOpinionGui {
                 self.visual.motion_tick,
                 palette,
             ))
-            .child(h_flex().gap(px(10.)).children([
-                metric_chip(
-                    "评论扫描",
-                    self.task.progress.comments_scanned,
-                    palette.accent_2,
-                    palette,
-                ),
-                metric_chip(
-                    "评论新增",
-                    self.task.progress.comments_appended,
-                    palette.success,
-                    palette,
-                ),
-                metric_chip(
-                    "弹幕扫描",
-                    self.task.progress.danmaku_scanned,
-                    palette.accent,
-                    palette,
-                ),
-                metric_chip(
-                    "分段",
-                    self.task.progress.danmaku_segments,
-                    palette.warning,
-                    palette,
-                ),
-            ]))
+            .child(
+                v_flex()
+                    .gap(px(10.))
+                    .child(h_flex().gap(px(10.)).children([
+                        metric_chip(
+                            "评论扫描",
+                            self.task.progress.comments_scanned,
+                            palette.accent_2,
+                            palette,
+                        ),
+                        metric_chip(
+                            "评论新增",
+                            self.task.progress.comments_appended,
+                            palette.success,
+                            palette,
+                        ),
+                    ]))
+                    .child(h_flex().gap(px(10.)).children([
+                        metric_chip(
+                            "弹幕扫描",
+                            self.task.progress.danmaku_scanned,
+                            palette.accent,
+                            palette,
+                        ),
+                        metric_chip(
+                            "分段",
+                            self.task.progress.danmaku_segments,
+                            palette.warning,
+                            palette,
+                        ),
+                    ])),
+            )
             .child(self.render_run_summary(palette))
     }
 
@@ -1163,6 +1190,13 @@ struct Palette {
     error: Hsla,
 }
 
+#[derive(Clone, Copy)]
+enum HeaderActionKind {
+    Ghost,
+    Outline,
+    Primary,
+}
+
 impl Default for Palette {
     fn default() -> Self {
         Self {
@@ -1180,6 +1214,51 @@ impl Default for Palette {
             error: rgb(0xd92d20).into(),
         }
     }
+}
+
+fn header_action_button(
+    label: &'static str,
+    kind: HeaderActionKind,
+    enabled: bool,
+    palette: &Palette,
+) -> gpui::Div {
+    let (bg, border, text) = match kind {
+        HeaderActionKind::Ghost => (
+            palette.surface_soft,
+            palette.border,
+            if enabled { palette.text } else { palette.muted },
+        ),
+        HeaderActionKind::Outline => (
+            palette.warning.opacity(0.06),
+            palette.warning.opacity(0.28),
+            palette.warning,
+        ),
+        HeaderActionKind::Primary => (
+            palette.accent,
+            palette.accent,
+            hsla(0., 0., 1., if enabled { 1.0 } else { 0.7 }),
+        ),
+    };
+
+    div()
+        .flex_shrink_0()
+        .min_w(px(78.))
+        .h(px(36.))
+        .px(px(14.))
+        .rounded(px(999.))
+        .border_1()
+        .border_color(border.opacity(if enabled { 1.0 } else { 0.45 }))
+        .bg(bg.opacity(if enabled { 1.0 } else { 0.45 }))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(text)
+                .child(label),
+        )
 }
 
 fn panel(palette: &Palette) -> gpui::Div {
