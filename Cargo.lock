@@ -558,6 +558,7 @@ dependencies = [
  "anyhow",
  "clap",
  "csv",
+ "embed-resource",
  "gpui",
  "gpui-component",
  "md5",
