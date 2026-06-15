@@ -70,7 +70,7 @@ const VIDEO_AFTER_HELP: &str = r#"Examples:
 const RUN_AFTER_HELP: &str = r#"Examples:
   bili-opinion run BV1yEEq68EQ3 --output output
   bili-opinion run https://www.bilibili.com/video/BV1yEEq68EQ3 --output output
-  bili-opinion run BV1yEEq68EQ3 --format csv,jsonl --request-delay-ms 1500
+  bili-opinion run BV1yEEq68EQ3 --format csv,jsonl --request-delay-ms 500
   bili-opinion run --input bvids.txt --danmaku-only
 
 This command collects comments and danmaku in one pass by default.
@@ -79,7 +79,7 @@ This command collects comments and danmaku in one pass by default.
 const COMMENTS_AFTER_HELP: &str = r#"Examples:
   bili-opinion comments BV1yEEq68EQ3 --format csv,jsonl
   bili-opinion comments https://www.bilibili.com/video/BV1yEEq68EQ3 --format csv,jsonl
-  bili-opinion comments --input bvids.txt --output output --request-delay-ms 1500
+  bili-opinion comments --input bvids.txt --output output --request-delay-ms 500
   bili-opinion comments BV1yEEq68EQ3 --max-pages 1 --max-reply-pages 1
 
 For full collection, prefer a browser cookie and a conservative request delay.
