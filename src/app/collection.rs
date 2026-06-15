@@ -180,6 +180,19 @@ pub fn default_cookie_header() -> Result<Option<String>> {
     Ok(None)
 }
 
+pub fn save_cookie_header(path: &Path, cookie_header: &str) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create cookie directory: {}", parent.display()))?;
+    }
+
+    fs::write(path, cookie_header)
+        .with_context(|| format!("failed to write cookie file: {}", path.display()))?;
+    Ok(())
+}
+
 fn read_cookie_file(path: &Path) -> Result<String> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read cookie file: {}", path.display()))?

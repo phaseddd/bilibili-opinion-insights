@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::app::collection::{
     CollectionFailure, CollectionJobOutcome, CollectionRequest, CredentialOptions,
     DEFAULT_COOKIE_PATH, DEFAULT_OUTPUT_ROOT, DEFAULT_REQUEST_DELAY_MS, default_cookie_header,
-    load_cookie_header, run_collection_with_events,
+    load_cookie_header, run_collection_with_events, save_cookie_header,
 };
 use crate::app::comments::CommentOutputFormat;
 use crate::bili::auth::{QrLoginStatus, render_terminal_qr};
@@ -541,17 +541,6 @@ fn print_login_status_once(last_status: &mut String, status: &str) {
         last_status.clear();
         last_status.push_str(status);
     }
-}
-
-fn save_cookie_header(path: &Path, cookie_header: &str) -> Result<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)?;
-    }
-
-    fs::write(path, cookie_header)?;
-    Ok(())
 }
 
 fn credential_options(args: &CredentialArgs) -> CredentialOptions {
