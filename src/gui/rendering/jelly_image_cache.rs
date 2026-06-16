@@ -14,6 +14,9 @@ use crate::gui::rendering::jelly_button_bitmap::{
 use crate::gui::rendering::jelly_geometry::{
     JellyRibbonChainShape, JellyRibbonShape, jelly_ribbon_profile,
 };
+use crate::gui::rendering::jelly_switch_bitmap::{
+    JellySwitchBitmapRequest, rasterize_switch_material_bitmap,
+};
 
 const MAX_CACHED_IMAGES: usize = 96;
 
@@ -43,6 +46,11 @@ pub(crate) struct JellyButtonImage {
     pub(crate) image: Arc<RenderImage>,
 }
 
+#[derive(Clone)]
+pub(crate) struct JellySwitchImage {
+    pub(crate) image: Arc<RenderImage>,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct JellyProgressImageRequest {
     pub(crate) width: f32,
@@ -63,6 +71,18 @@ pub(crate) struct JellyButtonImageRequest {
     pub(crate) material: JellyMaterialToken,
     pub(crate) enabled: bool,
     pub(crate) loading: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct JellySwitchImageRequest {
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+    pub(crate) motion: JellyMotionSnapshot,
+    pub(crate) tone: JellyTone,
+    pub(crate) material: JellyMaterialToken,
+    pub(crate) checked: bool,
+    pub(crate) enabled: bool,
+    pub(crate) active: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,10 +117,30 @@ struct JellyButtonImageKey {
     loading: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct JellySwitchImageKey {
+    width_px: u16,
+    height_px: u16,
+    pressure_bucket: u8,
+    rebound_bucket: i8,
+    squash_x_bucket: u8,
+    squash_y_bucket: u8,
+    rim_bucket: u8,
+    gloss_bucket: u8,
+    inner_bucket: u8,
+    contact_bucket: u8,
+    aura_bucket: u8,
+    tone: JellyTone,
+    checked: bool,
+    enabled: bool,
+    active: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct JellyImageCache {
     progress_entries: VecDeque<(JellyProgressImageKey, Arc<RenderImage>)>,
     button_entries: VecDeque<(JellyButtonImageKey, Arc<RenderImage>)>,
+    switch_entries: VecDeque<(JellySwitchImageKey, Arc<RenderImage>)>,
 }
 
 impl JellyImageCache {
@@ -185,9 +225,47 @@ impl JellyImageCache {
         Some(JellyButtonImage { image })
     }
 
+    pub(crate) fn switch_image(
+        &mut self,
+        request: JellySwitchImageRequest,
+    ) -> Option<JellySwitchImage> {
+        let key = JellySwitchImageKey::from_motion(request)?;
+        if let Some(image) = lookup_image(&mut self.switch_entries, key) {
+            return Some(JellySwitchImage { image });
+        }
+
+        let render_width = key.width_px as f32;
+        let render_height = key.height_px as f32;
+        let bitmap = rasterize_switch_material_bitmap(JellySwitchBitmapRequest {
+            width: render_width,
+            height: render_height,
+            pixel_size: if render_height >= 46. { 1.3 } else { 1.45 },
+            material: request.material,
+            motion: JellyMotionSnapshot {
+                pressure: key.pressure_bucket as f32 / 10.,
+                rebound: key.rebound_bucket as f32 / 10.,
+                squash_x: key.squash_x_bucket as f32 / 10.,
+                squash_y: key.squash_y_bucket as f32 / 10.,
+                rim_pressure: key.rim_bucket as f32 / 10.,
+                gloss_phase: key.gloss_bucket as f32 / 16.,
+                inner_lag: key.inner_bucket as f32 / 10.,
+                contact: key.contact_bucket as f32 / 10.,
+                aura: key.aura_bucket as f32 / 10.,
+                error_shake: request.motion.error_shake,
+            },
+            checked: key.checked,
+            enabled: key.enabled,
+            active: key.active,
+        });
+        let image = bitmap.to_gpui_render_image()?;
+
+        insert_image(&mut self.switch_entries, key, image.clone());
+        Some(JellySwitchImage { image })
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.progress_entries.len() + self.button_entries.len()
+        self.progress_entries.len() + self.button_entries.len() + self.switch_entries.len()
     }
 }
 
@@ -231,6 +309,31 @@ impl JellyButtonImageKey {
             tone: request.tone,
             enabled: request.enabled,
             loading: request.loading,
+        })
+    }
+}
+
+impl JellySwitchImageKey {
+    fn from_motion(request: JellySwitchImageRequest) -> Option<Self> {
+        let width_px = quantize_dimension(request.width, 2., 64., 320.)?;
+        let height_px = quantize_dimension(request.height, 2., 28., 96.)?;
+
+        Some(Self {
+            width_px,
+            height_px,
+            pressure_bucket: quantize_unit(request.motion.pressure, 10) as u8,
+            rebound_bucket: quantize_signed(request.motion.rebound, 10),
+            squash_x_bucket: quantize_unit(request.motion.squash_x, 10) as u8,
+            squash_y_bucket: quantize_unit(request.motion.squash_y, 10) as u8,
+            rim_bucket: quantize_unit(request.motion.rim_pressure, 10) as u8,
+            gloss_bucket: quantize_unit(request.motion.gloss_phase, 16) as u8,
+            inner_bucket: quantize_unit(request.motion.inner_lag, 10) as u8,
+            contact_bucket: quantize_unit(request.motion.contact, 10) as u8,
+            aura_bucket: quantize_unit(request.motion.aura, 10) as u8,
+            tone: request.tone,
+            checked: request.checked,
+            enabled: request.enabled,
+            active: request.active,
         })
     }
 }
@@ -307,7 +410,7 @@ mod tests {
 
     use super::{
         JellyButtonImageRequest, JellyImageCache, JellyProgressImagePhase,
-        JellyProgressImageQuality, JellyProgressImageRequest,
+        JellyProgressImageQuality, JellyProgressImageRequest, JellySwitchImageRequest,
     };
 
     #[test]
@@ -482,6 +585,81 @@ mod tests {
         assert_eq!(cache.len(), 3);
     }
 
+    #[test]
+    fn switch_image_cache_reuses_quantized_motion() {
+        let mut cache = JellyImageCache::default();
+        let palette = Palette::default();
+        let material = JellyMaterialToken::for_tone(JellyTone::Primary, &palette);
+        let first = cache
+            .switch_image(sample_switch_request(
+                142.,
+                52.,
+                sample_button_motion(0.21),
+                material,
+                true,
+            ))
+            .expect("switch image");
+        let second = cache
+            .switch_image(sample_switch_request(
+                142.4,
+                52.2,
+                sample_button_motion(0.22),
+                material,
+                true,
+            ))
+            .expect("switch image");
+
+        assert_eq!(cache.len(), 1);
+        assert!(Arc::ptr_eq(&first.image, &second.image));
+    }
+
+    #[test]
+    fn switch_image_cache_splits_checked_tone_and_enabled_state() {
+        let mut cache = JellyImageCache::default();
+        let palette = Palette::default();
+
+        cache.switch_image(sample_switch_request(
+            142.,
+            52.,
+            sample_button_motion(0.2),
+            JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
+            true,
+        ));
+        cache.switch_image(JellySwitchImageRequest {
+            checked: false,
+            ..sample_switch_request(
+                142.,
+                52.,
+                sample_button_motion(0.2),
+                JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
+                true,
+            )
+        });
+        cache.switch_image(JellySwitchImageRequest {
+            tone: JellyTone::Cyan,
+            material: JellyMaterialToken::for_tone(JellyTone::Cyan, &palette),
+            ..sample_switch_request(
+                142.,
+                52.,
+                sample_button_motion(0.2),
+                JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
+                true,
+            )
+        });
+        cache.switch_image(JellySwitchImageRequest {
+            enabled: false,
+            ..sample_switch_request(
+                142.,
+                52.,
+                sample_button_motion(0.2),
+                JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
+                true,
+            )
+        });
+
+        assert_eq!(cache.len(), 4);
+    }
+
     fn sample_request(
         width: f32,
         height: f32,
@@ -536,6 +714,25 @@ mod tests {
             material,
             enabled: true,
             loading: false,
+        }
+    }
+
+    fn sample_switch_request(
+        width: f32,
+        height: f32,
+        motion: JellyMotionSnapshot,
+        material: JellyMaterialToken,
+        checked: bool,
+    ) -> JellySwitchImageRequest {
+        JellySwitchImageRequest {
+            width,
+            height,
+            motion,
+            tone: JellyTone::Primary,
+            material,
+            checked,
+            enabled: true,
+            active: checked,
         }
     }
 

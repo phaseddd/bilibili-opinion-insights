@@ -37,7 +37,7 @@ use crate::gui::messages::{AuthMessage, GuiMessage};
 use crate::gui::motion::{JellyMotionSnapshot, wave_between};
 use crate::gui::rendering::jelly_image_cache::{
     JellyButtonImage, JellyButtonImageRequest, JellyProgressImagePhase, JellyProgressImageQuality,
-    JellyProgressImageRequest,
+    JellyProgressImageRequest, JellySwitchImage, JellySwitchImageRequest,
 };
 use crate::gui::state::auth::{
     AuthPhase, AuthState, CredentialSource, QrState, SessionKind, SessionMode,
@@ -108,6 +108,16 @@ struct FormState {
     collect_danmaku: bool,
     write_csv: bool,
     write_jsonl: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SwitchImageConfig {
+    tone: JellySwitchTone,
+    checked: bool,
+    enabled: bool,
+    active: bool,
+    size: JellySwitchSize,
+    motion: JellyMotionSnapshot,
 }
 
 impl BiliOpinionGui {
@@ -326,6 +336,31 @@ impl BiliOpinionGui {
                 material: JellyMaterialToken::for_tone(jelly_tone, palette),
                 enabled,
                 loading,
+            })
+    }
+
+    fn switch_image(
+        &mut self,
+        palette: &Palette,
+        request: SwitchImageConfig,
+    ) -> Option<JellySwitchImage> {
+        let jelly_tone = switch_tone(request.tone);
+        let (width, height) = match request.size {
+            JellySwitchSize::Standard => (142., 52.),
+            JellySwitchSize::Compact => (100., 36.),
+        };
+
+        self.visual
+            .image_cache
+            .switch_image(JellySwitchImageRequest {
+                width,
+                height,
+                motion: request.motion,
+                tone: jelly_tone,
+                material: JellyMaterialToken::for_tone(jelly_tone, palette),
+                checked: request.checked,
+                enabled: request.enabled,
+                active: request.active,
             })
     }
 
@@ -1285,11 +1320,63 @@ impl BiliOpinionGui {
     }
 
     fn render_collection_panel(
-        &self,
+        &mut self,
         palette: &Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let options_enabled = !self.task.phase.is_busy();
+        let comments_active = self.task.phase.is_busy() && self.form.collect_comments;
+        let danmaku_active = self.task.phase.is_busy() && self.form.collect_danmaku;
+        let csv_active = self.task.phase.is_busy() && self.form.write_csv;
+        let jsonl_active = self.task.phase.is_busy() && self.form.write_jsonl;
+        let comments_motion = self.visual.switch_motion(101, comments_active);
+        let danmaku_motion = self.visual.switch_motion(102, danmaku_active);
+        let csv_motion = self.visual.switch_motion(103, csv_active);
+        let jsonl_motion = self.visual.switch_motion(104, jsonl_active);
+        let comments_image = self.switch_image(
+            palette,
+            SwitchImageConfig {
+                tone: JellySwitchTone::Primary,
+                checked: self.form.collect_comments,
+                enabled: options_enabled,
+                active: comments_active,
+                size: JellySwitchSize::Standard,
+                motion: comments_motion,
+            },
+        );
+        let danmaku_image = self.switch_image(
+            palette,
+            SwitchImageConfig {
+                tone: JellySwitchTone::Cyan,
+                checked: self.form.collect_danmaku,
+                enabled: options_enabled,
+                active: danmaku_active,
+                size: JellySwitchSize::Standard,
+                motion: danmaku_motion,
+            },
+        );
+        let csv_image = self.switch_image(
+            palette,
+            SwitchImageConfig {
+                tone: JellySwitchTone::Output,
+                checked: self.form.write_csv,
+                enabled: options_enabled,
+                active: csv_active,
+                size: JellySwitchSize::Standard,
+                motion: csv_motion,
+            },
+        );
+        let jsonl_image = self.switch_image(
+            palette,
+            SwitchImageConfig {
+                tone: JellySwitchTone::Output,
+                checked: self.form.write_jsonl,
+                enabled: options_enabled,
+                active: jsonl_active,
+                size: JellySwitchSize::Standard,
+                motion: jsonl_motion,
+            },
+        );
 
         panel(palette)
             .w(relative(0.3))
@@ -1335,10 +1422,8 @@ impl BiliOpinionGui {
                                 group: "collect-comments-switch",
                                 id_seed: 101,
                                 active: self.task.phase.is_busy() && self.form.collect_comments,
-                                motion: self.visual.switch_motion(
-                                    101,
-                                    self.task.phase.is_busy() && self.form.collect_comments,
-                                ),
+                                motion: comments_motion,
+                                image: comments_image,
                             },
                             palette,
                         )
@@ -1360,10 +1445,8 @@ impl BiliOpinionGui {
                                 group: "collect-danmaku-switch",
                                 id_seed: 102,
                                 active: self.task.phase.is_busy() && self.form.collect_danmaku,
-                                motion: self.visual.switch_motion(
-                                    102,
-                                    self.task.phase.is_busy() && self.form.collect_danmaku,
-                                ),
+                                motion: danmaku_motion,
+                                image: danmaku_image,
                             },
                             palette,
                         )
@@ -1391,10 +1474,8 @@ impl BiliOpinionGui {
                                 group: "write-csv-switch",
                                 id_seed: 103,
                                 active: self.task.phase.is_busy() && self.form.write_csv,
-                                motion: self.visual.switch_motion(
-                                    103,
-                                    self.task.phase.is_busy() && self.form.write_csv,
-                                ),
+                                motion: csv_motion,
+                                image: csv_image,
                             },
                             palette,
                         )
@@ -1416,10 +1497,8 @@ impl BiliOpinionGui {
                                 group: "write-jsonl-switch",
                                 id_seed: 104,
                                 active: self.task.phase.is_busy() && self.form.write_jsonl,
-                                motion: self.visual.switch_motion(
-                                    104,
-                                    self.task.phase.is_busy() && self.form.write_jsonl,
-                                ),
+                                motion: jsonl_motion,
+                                image: jsonl_image,
                             },
                             palette,
                         )
@@ -1829,5 +1908,13 @@ fn button_tone(tone: JellyActionTone) -> JellyTone {
         JellyActionTone::Cyan => JellyTone::Cyan,
         JellyActionTone::Warning => JellyTone::Warning,
         JellyActionTone::Neutral => JellyTone::Neutral,
+    }
+}
+
+fn switch_tone(tone: JellySwitchTone) -> JellyTone {
+    match tone {
+        JellySwitchTone::Primary => JellyTone::Primary,
+        JellySwitchTone::Cyan => JellyTone::Cyan,
+        JellySwitchTone::Output => JellyTone::Output,
     }
 }
