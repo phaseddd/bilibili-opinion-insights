@@ -225,11 +225,23 @@ pub fn jelly_action_button(
     let motion = config.motion;
     let group_name = SharedString::from(config.group);
     let id_seed = config.id_seed;
-    let shell_alpha = material.shell_alpha * opacity;
-    let core_alpha = material.core_alpha * 0.48 * opacity;
-    let trough_alpha = (0.3 + motion.inner_lag * 0.18 + motion.pressure * 0.14) * opacity;
     let button_image = config.image.clone();
     let has_button_image = button_image.is_some();
+    let shell_alpha = material.shell_alpha * opacity;
+    let shell_backing_alpha = if has_button_image {
+        shell_alpha * 0.18
+    } else {
+        shell_alpha
+    };
+    let shell_shadow_scale = if has_button_image { 0.42 } else { 1. };
+    let shell_hover_shadow_scale = if has_button_image { 0.58 } else { 1. };
+    let shell_border_alpha = if has_button_image {
+        (0.46 + motion.rim_pressure * 0.22) * opacity
+    } else {
+        (0.66 + motion.rim_pressure * 0.34) * opacity
+    };
+    let core_alpha = material.core_alpha * 0.48 * opacity;
+    let trough_alpha = (0.3 + motion.inner_lag * 0.18 + motion.pressure * 0.14) * opacity;
 
     div()
         .relative()
@@ -251,33 +263,31 @@ pub fn jelly_action_button(
                 .rounded(px(shape.shell_rounding))
                 .overflow_hidden()
                 .border_1()
-                .border_color(
-                    material
-                        .rim
-                        .opacity((0.66 + motion.rim_pressure * 0.34) * opacity),
-                )
+                .border_color(material.rim.opacity(shell_border_alpha))
                 .bg(linear_gradient(
                     135.,
-                    linear_color_stop(material.shell_start.opacity(shell_alpha), 0.0),
-                    linear_color_stop(material.shell_end.opacity(shell_alpha), 1.0),
+                    linear_color_stop(material.shell_start.opacity(shell_backing_alpha), 0.0),
+                    linear_color_stop(material.shell_end.opacity(shell_backing_alpha), 1.0),
                 ))
                 .shadow(vec![
                     gpui::BoxShadow {
                         color: material
                             .state_aura
-                            .opacity((0.28 + motion.aura * 0.18) * opacity),
+                            .opacity((0.28 + motion.aura * 0.18) * opacity * shell_shadow_scale),
                         offset: gpui::point(px(0.), px(shape.contact_offset)),
                         blur_radius: px(shape.contact_blur),
                         spread_radius: px(-14.),
                     },
                     gpui::BoxShadow {
-                        color: material.inner_glow.opacity(0.62 * opacity),
+                        color: material
+                            .inner_glow
+                            .opacity(0.62 * opacity * shell_shadow_scale),
                         offset: gpui::point(px(0.), px(7.)),
                         blur_radius: px(34.),
                         spread_radius: px(-7.),
                     },
                     gpui::BoxShadow {
-                        color: material.rim.opacity(0.58 * opacity),
+                        color: material.rim.opacity(0.58 * opacity * shell_shadow_scale),
                         offset: gpui::point(px(0.), px(1.)),
                         blur_radius: px(0.),
                         spread_radius: px(0.),
@@ -288,13 +298,17 @@ pub fn jelly_action_button(
                         this.border_color(material.rim.opacity(0.96 * opacity))
                             .shadow(vec![
                                 gpui::BoxShadow {
-                                    color: material.state_aura.opacity(0.36 * opacity),
+                                    color: material
+                                        .state_aura
+                                        .opacity(0.36 * opacity * shell_hover_shadow_scale),
                                     offset: gpui::point(px(0.), px(12.)),
                                     blur_radius: px(34.),
                                     spread_radius: px(-14.),
                                 },
                                 gpui::BoxShadow {
-                                    color: material.inner_glow.opacity(0.46 * opacity),
+                                    color: material
+                                        .inner_glow
+                                        .opacity(0.46 * opacity * shell_hover_shadow_scale),
                                     offset: gpui::point(px(0.), px(6.)),
                                     blur_radius: px(24.),
                                     spread_radius: px(-10.),
