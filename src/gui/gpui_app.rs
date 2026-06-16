@@ -45,7 +45,9 @@ use crate::gui::state::auth::{
     AuthPhase, AuthState, CredentialSource, QrState, SessionKind, SessionMode,
 };
 use crate::gui::state::events::{EVENT_LIMIT, EventKind, EventLine, EventState};
-use crate::gui::state::results::{ResultItem, ResultState, format_collection_job};
+use crate::gui::state::results::{
+    FailureItem, ResultItem, ResultKind, ResultState, format_collection_job,
+};
 use crate::gui::state::task::{RunSummary, TaskLanePhase, TaskPhase, TaskState};
 use crate::gui::state::visual::{ButtonMotionId, VisualState};
 use crate::gui::theme::Palette;
@@ -1756,15 +1758,71 @@ impl BiliOpinionGui {
             EventKind::Video | EventKind::Comments | EventKind::Danmaku | EventKind::Output
         );
 
+        self.surface_image_for_kind(
+            palette,
+            line.kind,
+            density,
+            980.,
+            if matches!(density, JellySurfaceDensity::Result) {
+                48.
+            } else {
+                42.
+            },
+            active,
+        )
+    }
+
+    fn result_surface_image(
+        &mut self,
+        palette: &Palette,
+        item: &ResultItem,
+    ) -> Option<JellySurfaceImage> {
+        let kind = match item.kind {
+            ResultKind::Comments => EventKind::Comments,
+            ResultKind::Danmaku => EventKind::Danmaku,
+        };
+        let active = item.scanned > 0 || item.appended > 0;
+        let height = (62. + item.outputs.len() as f32 * 14.).clamp(64., 118.);
+
+        self.surface_image_for_kind(
+            palette,
+            kind,
+            JellySurfaceDensity::Result,
+            980.,
+            height,
+            active,
+        )
+    }
+
+    fn failure_surface_image(
+        &mut self,
+        palette: &Palette,
+        _failure: &FailureItem,
+    ) -> Option<JellySurfaceImage> {
+        self.surface_image_for_kind(
+            palette,
+            EventKind::Failure,
+            JellySurfaceDensity::Result,
+            980.,
+            58.,
+            true,
+        )
+    }
+
+    fn surface_image_for_kind(
+        &mut self,
+        palette: &Palette,
+        kind: EventKind,
+        density: JellySurfaceDensity,
+        width: f32,
+        height: f32,
+        active: bool,
+    ) -> Option<JellySurfaceImage> {
         self.visual
             .image_cache
             .surface_image(JellySurfaceImageRequest {
-                width: 980.,
-                height: if matches!(density, JellySurfaceDensity::Result) {
-                    48.
-                } else {
-                    42.
-                },
+                width,
+                height,
                 motion: JellyMotionSnapshot {
                     pressure: if active { 0.18 } else { 0.08 },
                     rebound: if active { 0.08 } else { 0. },
@@ -1779,8 +1837,8 @@ impl BiliOpinionGui {
                     aura: if active { 0.18 } else { 0.08 },
                     error_shake: 0.,
                 },
-                tone: event_tone(line.kind),
-                material: JellyMaterialToken::for_event(line.kind, palette),
+                tone: event_tone(kind),
+                material: JellyMaterialToken::for_event(kind, palette),
                 density,
                 active,
             })
@@ -1865,6 +1923,8 @@ impl BiliOpinionGui {
     }
 
     fn render_result_panel(&mut self, palette: &Palette) -> impl IntoElement {
+        let result_items = self.results.jobs.to_vec();
+        let failure_items = self.results.failures.to_vec();
         let result_label = if self.results.jobs.is_empty() {
             "等待结果"
         } else {
@@ -1903,24 +1963,22 @@ impl BiliOpinionGui {
             .child(
                 v_flex()
                     .gap(px(8.))
-                    .children(
-                        self.results
-                            .jobs
-                            .iter()
-                            .map(|item| result_row(item, palette)),
-                    )
+                    .children(result_items.iter().map(|item| {
+                        let image = self.result_surface_image(palette, item);
+                        result_row(item, palette, image)
+                    }))
                     .when(self.results.jobs.is_empty(), |this| {
                         this.child(empty_result_state(palette))
                     }),
             )
             .when(!self.results.failures.is_empty(), |this| {
                 this.child(
-                    v_flex().gap(px(6.)).children(
-                        self.results
-                            .failures
-                            .iter()
-                            .map(|failure| failure_row(failure, palette)),
-                    ),
+                    v_flex()
+                        .gap(px(6.))
+                        .children(failure_items.iter().map(|failure| {
+                            let image = self.failure_surface_image(palette, failure);
+                            failure_row(failure, palette, image)
+                        })),
                 )
             })
             .when_some(self.results.output_root.clone(), |this, output| {

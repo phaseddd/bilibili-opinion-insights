@@ -9,6 +9,7 @@ pub(crate) struct ResultState {
     pub(crate) output_root: Option<PathBuf>,
 }
 
+#[derive(Clone)]
 pub(crate) struct ResultItem {
     pub(crate) kind: ResultKind,
     pub(crate) bvid: String,
@@ -24,6 +25,7 @@ pub(crate) enum ResultKind {
     Danmaku,
 }
 
+#[derive(Clone)]
 pub(crate) struct FailureItem {
     pub(crate) kind: String,
     pub(crate) bvid: String,
