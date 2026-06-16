@@ -34,7 +34,9 @@ use crate::gui::components::jelly_switch::{
 use crate::gui::components::jelly_task_lane::{jelly_task_lane, jelly_task_lane_tone};
 use crate::gui::messages::{AuthMessage, GuiMessage};
 use crate::gui::motion::wave_between;
-use crate::gui::rendering::jelly_image_cache::JellyProgressImagePhase;
+use crate::gui::rendering::jelly_image_cache::{
+    JellyProgressImagePhase, JellyProgressImageQuality, JellyProgressImageRequest,
+};
 use crate::gui::state::auth::{
     AuthPhase, AuthState, CredentialSource, QrState, SessionKind, SessionMode,
 };
@@ -1401,14 +1403,21 @@ impl BiliOpinionGui {
             .progress
             .motion_snapshot(self.task.phase, self.visual.motion_tick);
         let progress_tone = progress_tone(self.task.phase);
-        let progress_bitmap = self.visual.image_cache.progress_image(
-            920.,
-            46.,
-            progress_motion,
-            progress_image_phase(self.task.phase),
-            progress_tone,
-            crate::gui::materials::JellyMaterialToken::for_tone(progress_tone, palette),
-        );
+        let progress_bitmap = self
+            .visual
+            .image_cache
+            .progress_image(JellyProgressImageRequest {
+                width: 920.,
+                height: 46.,
+                quality: JellyProgressImageQuality::Main,
+                motion: progress_motion,
+                phase: progress_image_phase(self.task.phase),
+                tone: progress_tone,
+                material: crate::gui::materials::JellyMaterialToken::for_tone(
+                    progress_tone,
+                    palette,
+                ),
+            });
 
         panel(palette)
             .gap(px(14.))
@@ -1477,14 +1486,20 @@ impl BiliOpinionGui {
             .children(self.task.lanes.iter().map(|lane| {
                 let motion = lane.motion_snapshot(self.visual.motion_tick);
                 let tone = jelly_task_lane_tone(lane);
-                let bitmap = self.visual.image_cache.progress_image(
-                    360.,
-                    26.,
-                    motion,
-                    lane_image_phase(lane.phase),
-                    tone,
-                    crate::gui::materials::JellyMaterialToken::for_tone(tone, palette),
-                );
+                let bitmap = self
+                    .visual
+                    .image_cache
+                    .progress_image(JellyProgressImageRequest {
+                        width: 360.,
+                        height: 26.,
+                        quality: JellyProgressImageQuality::Lane,
+                        motion,
+                        phase: lane_image_phase(lane.phase),
+                        tone,
+                        material: crate::gui::materials::JellyMaterialToken::for_tone(
+                            tone, palette,
+                        ),
+                    });
 
                 jelly_task_lane(lane, self.visual.motion_tick, palette, bitmap)
             }))
