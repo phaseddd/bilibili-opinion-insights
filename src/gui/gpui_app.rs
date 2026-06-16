@@ -1656,6 +1656,26 @@ impl BiliOpinionGui {
         let phase_kind = phase_kind(self.task.phase);
         let status_capsule_image =
             self.capsule_image(palette, phase_kind, 136., self.task.phase.is_busy());
+        let comments_scanned_image = self.metric_surface_image(
+            palette,
+            EventKind::Comments,
+            self.task.progress.comments_scanned,
+        );
+        let comments_appended_image = self.metric_surface_image(
+            palette,
+            EventKind::Success,
+            self.task.progress.comments_appended,
+        );
+        let danmaku_scanned_image = self.metric_surface_image(
+            palette,
+            EventKind::Danmaku,
+            self.task.progress.danmaku_scanned,
+        );
+        let danmaku_segments_image = self.metric_surface_image(
+            palette,
+            EventKind::Warning,
+            self.task.progress.danmaku_segments,
+        );
 
         panel(palette)
             .gap(px(14.))
@@ -1693,12 +1713,14 @@ impl BiliOpinionGui {
                             self.task.progress.comments_scanned,
                             palette.accent_2,
                             palette,
+                            comments_scanned_image,
                         ),
                         metric_chip(
                             "评论新增",
                             self.task.progress.comments_appended,
                             palette.success,
                             palette,
+                            comments_appended_image,
                         ),
                     ]))
                     .child(h_flex().gap(px(10.)).children([
@@ -1707,12 +1729,14 @@ impl BiliOpinionGui {
                             self.task.progress.danmaku_scanned,
                             palette.accent,
                             palette,
+                            danmaku_scanned_image,
                         ),
                         metric_chip(
                             "分段",
                             self.task.progress.danmaku_segments,
                             palette.warning,
                             palette,
+                            danmaku_segments_image,
                         ),
                     ])),
             )
@@ -1817,6 +1841,22 @@ impl BiliOpinionGui {
             980.,
             78.,
             false,
+        )
+    }
+
+    fn metric_surface_image(
+        &mut self,
+        palette: &Palette,
+        kind: EventKind,
+        value: usize,
+    ) -> Option<JellySurfaceImage> {
+        self.surface_image_for_kind(
+            palette,
+            kind,
+            JellySurfaceDensity::Result,
+            460.,
+            84.,
+            value > 0,
         )
     }
 

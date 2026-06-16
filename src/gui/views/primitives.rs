@@ -6,7 +6,7 @@ use gpui_component::{h_flex, v_flex};
 
 use crate::gui::components::jelly_progress::JellyProgressPhase;
 use crate::gui::materials::JellyMaterialToken;
-use crate::gui::rendering::jelly_image_cache::JellyCapsuleImage;
+use crate::gui::rendering::jelly_image_cache::{JellyCapsuleImage, JellySurfaceImage};
 use crate::gui::state::events::EventKind;
 use crate::gui::state::task::TaskPhase;
 use crate::gui::theme::Palette;
@@ -104,28 +104,66 @@ pub(crate) fn metric_chip(
     value: usize,
     color: Hsla,
     palette: &Palette,
+    image: Option<JellySurfaceImage>,
 ) -> impl IntoElement {
-    v_flex()
+    let has_image = image.is_some();
+    let backing_alpha = if has_image { 0.035 } else { 0.07 };
+    let border_alpha = if has_image { 0.16 } else { 0.2 };
+    let chip = v_flex()
+        .relative()
         .flex_1()
         .gap(px(5.))
         .p(px(10.))
         .rounded(px(10.))
+        .overflow_hidden()
         .border_1()
-        .border_color(color.opacity(0.2))
-        .bg(color.opacity(0.07))
-        .child(
-            div()
-                .text_size(px(11.))
-                .text_color(palette.muted)
-                .child(label),
+        .border_color(color.opacity(border_alpha))
+        .bg(color.opacity(backing_alpha));
+
+    let chip = if let Some(image) = image {
+        chip.child(
+            canvas(
+                move |_, _window: &mut Window, _cx| (),
+                move |bounds, _, window: &mut Window, _cx| {
+                    let origin_x = f32::from(bounds.origin.x);
+                    let origin_y = f32::from(bounds.origin.y);
+                    let width = f32::from(bounds.size.width);
+                    let height = f32::from(bounds.size.height);
+                    let image_bounds = Bounds::new(
+                        point(px(origin_x), px(origin_y)),
+                        size(px(width), px(height)),
+                    );
+                    let _ = window.paint_image(
+                        image_bounds,
+                        Corners::from(px(10.)),
+                        image.image.clone(),
+                        0,
+                        false,
+                    );
+                },
+            )
+            .absolute()
+            .inset_0(),
         )
-        .child(
-            div()
-                .text_size(px(17.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(palette.text)
-                .child(value.to_string()),
-        )
+    } else {
+        chip
+    };
+
+    chip.child(
+        div()
+            .relative()
+            .text_size(px(11.))
+            .text_color(palette.muted)
+            .child(label),
+    )
+    .child(
+        div()
+            .relative()
+            .text_size(px(17.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(palette.text)
+            .child(value.to_string()),
+    )
 }
 
 pub(crate) fn status_badge(
