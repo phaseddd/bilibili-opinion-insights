@@ -10,6 +10,7 @@ mod workers;
 
 mod components {
     pub mod jelly_button;
+    pub mod jelly_event_row;
     pub mod jelly_progress;
     pub mod jelly_switch;
     pub mod jelly_task_lane;

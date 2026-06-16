@@ -17,6 +17,9 @@ use crate::gui::rendering::jelly_capsule_bitmap::{
 use crate::gui::rendering::jelly_geometry::{
     JellyRibbonChainShape, JellyRibbonShape, jelly_ribbon_profile,
 };
+use crate::gui::rendering::jelly_surface_bitmap::{
+    JellySurfaceBitmapRequest, JellySurfaceDensity, rasterize_surface_material_bitmap,
+};
 use crate::gui::rendering::jelly_switch_bitmap::{
     JellySwitchBitmapRequest, rasterize_switch_material_bitmap,
 };
@@ -56,6 +59,11 @@ pub(crate) struct JellySwitchImage {
 
 #[derive(Clone)]
 pub(crate) struct JellyCapsuleImage {
+    pub(crate) image: Arc<RenderImage>,
+}
+
+#[derive(Clone)]
+pub(crate) struct JellySurfaceImage {
     pub(crate) image: Arc<RenderImage>,
 }
 
@@ -101,6 +109,17 @@ pub(crate) struct JellyCapsuleImageRequest {
     pub(crate) tone: JellyTone,
     pub(crate) material: JellyMaterialToken,
     pub(crate) enabled: bool,
+    pub(crate) active: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct JellySurfaceImageRequest {
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+    pub(crate) motion: JellyMotionSnapshot,
+    pub(crate) tone: JellyTone,
+    pub(crate) material: JellyMaterialToken,
+    pub(crate) density: JellySurfaceDensity,
     pub(crate) active: bool,
 }
 
@@ -172,12 +191,28 @@ struct JellyCapsuleImageKey {
     active: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct JellySurfaceImageKey {
+    width_px: u16,
+    height_px: u16,
+    pressure_bucket: u8,
+    rebound_bucket: i8,
+    rim_bucket: u8,
+    gloss_bucket: u8,
+    contact_bucket: u8,
+    aura_bucket: u8,
+    tone: JellyTone,
+    density: JellySurfaceDensity,
+    active: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct JellyImageCache {
     progress_entries: VecDeque<(JellyProgressImageKey, Arc<RenderImage>)>,
     button_entries: VecDeque<(JellyButtonImageKey, Arc<RenderImage>)>,
     switch_entries: VecDeque<(JellySwitchImageKey, Arc<RenderImage>)>,
     capsule_entries: VecDeque<(JellyCapsuleImageKey, Arc<RenderImage>)>,
+    surface_entries: VecDeque<(JellySurfaceImageKey, Arc<RenderImage>)>,
 }
 
 impl JellyImageCache {
@@ -337,12 +372,50 @@ impl JellyImageCache {
         Some(JellyCapsuleImage { image })
     }
 
+    pub(crate) fn surface_image(
+        &mut self,
+        request: JellySurfaceImageRequest,
+    ) -> Option<JellySurfaceImage> {
+        let key = JellySurfaceImageKey::from_motion(request)?;
+        if let Some(image) = lookup_image(&mut self.surface_entries, key) {
+            return Some(JellySurfaceImage { image });
+        }
+
+        let render_width = key.width_px as f32;
+        let render_height = key.height_px as f32;
+        let bitmap = rasterize_surface_material_bitmap(JellySurfaceBitmapRequest {
+            width: render_width,
+            height: render_height,
+            pixel_size: if render_height >= 42. { 1.4 } else { 1.6 },
+            material: request.material,
+            motion: JellyMotionSnapshot {
+                pressure: key.pressure_bucket as f32 / 10.,
+                rebound: key.rebound_bucket as f32 / 10.,
+                squash_x: 0.,
+                squash_y: 0.,
+                rim_pressure: key.rim_bucket as f32 / 10.,
+                gloss_phase: key.gloss_bucket as f32 / 16.,
+                inner_lag: 0.,
+                contact: key.contact_bucket as f32 / 10.,
+                aura: key.aura_bucket as f32 / 10.,
+                error_shake: request.motion.error_shake,
+            },
+            density: key.density,
+            active: key.active,
+        });
+        let image = bitmap.to_gpui_render_image()?;
+
+        insert_image(&mut self.surface_entries, key, image.clone());
+        Some(JellySurfaceImage { image })
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.progress_entries.len()
             + self.button_entries.len()
             + self.switch_entries.len()
             + self.capsule_entries.len()
+            + self.surface_entries.len()
     }
 }
 
@@ -438,6 +511,27 @@ impl JellyCapsuleImageKey {
     }
 }
 
+impl JellySurfaceImageKey {
+    fn from_motion(request: JellySurfaceImageRequest) -> Option<Self> {
+        let width_px = quantize_dimension(request.width, 4., 64., 2000.)?;
+        let height_px = quantize_dimension(request.height, 2., 18., 220.)?;
+
+        Some(Self {
+            width_px,
+            height_px,
+            pressure_bucket: quantize_unit(request.motion.pressure, 10) as u8,
+            rebound_bucket: quantize_signed(request.motion.rebound, 10),
+            rim_bucket: quantize_unit(request.motion.rim_pressure, 10) as u8,
+            gloss_bucket: quantize_unit(request.motion.gloss_phase, 16) as u8,
+            contact_bucket: quantize_unit(request.motion.contact, 10) as u8,
+            aura_bucket: quantize_unit(request.motion.aura, 10) as u8,
+            tone: request.tone,
+            density: request.density,
+            active: request.active,
+        })
+    }
+}
+
 fn lookup_image<K: Copy + Eq>(
     entries: &mut VecDeque<(K, Arc<RenderImage>)>,
     key: K,
@@ -511,8 +605,9 @@ mod tests {
     use super::{
         JellyButtonImageRequest, JellyCapsuleImageRequest, JellyImageCache,
         JellyProgressImagePhase, JellyProgressImageQuality, JellyProgressImageRequest,
-        JellySwitchImageRequest,
+        JellySurfaceImageRequest, JellySwitchImageRequest,
     };
+    use crate::gui::rendering::jelly_surface_bitmap::JellySurfaceDensity;
 
     #[test]
     fn progress_image_cache_reuses_quantized_motion() {
@@ -836,6 +931,88 @@ mod tests {
         assert_eq!(cache.len(), 4);
     }
 
+    #[test]
+    fn surface_image_cache_reuses_quantized_motion() {
+        let mut cache = JellyImageCache::default();
+        let palette = Palette::default();
+        let material = JellyMaterialToken::for_tone(JellyTone::Primary, &palette);
+        let first = cache
+            .surface_image(sample_surface_request(
+                980.,
+                42.,
+                sample_button_motion(0.21),
+                material,
+                JellySurfaceDensity::Event,
+                false,
+            ))
+            .expect("surface image");
+        let second = cache
+            .surface_image(sample_surface_request(
+                981.4,
+                42.2,
+                sample_button_motion(0.22),
+                material,
+                JellySurfaceDensity::Event,
+                false,
+            ))
+            .expect("surface image");
+
+        assert_eq!(cache.len(), 1);
+        assert!(Arc::ptr_eq(&first.image, &second.image));
+    }
+
+    #[test]
+    fn surface_image_cache_splits_tone_density_and_active_state() {
+        let mut cache = JellyImageCache::default();
+        let palette = Palette::default();
+
+        cache.surface_image(sample_surface_request(
+            980.,
+            42.,
+            sample_button_motion(0.2),
+            JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
+            JellySurfaceDensity::Event,
+            false,
+        ));
+        cache.surface_image(JellySurfaceImageRequest {
+            tone: JellyTone::Cyan,
+            material: JellyMaterialToken::for_tone(JellyTone::Cyan, &palette),
+            ..sample_surface_request(
+                980.,
+                42.,
+                sample_button_motion(0.2),
+                JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
+                JellySurfaceDensity::Event,
+                false,
+            )
+        });
+        cache.surface_image(JellySurfaceImageRequest {
+            density: JellySurfaceDensity::Result,
+            height: 72.,
+            ..sample_surface_request(
+                980.,
+                42.,
+                sample_button_motion(0.2),
+                JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
+                JellySurfaceDensity::Event,
+                false,
+            )
+        });
+        cache.surface_image(JellySurfaceImageRequest {
+            active: true,
+            ..sample_surface_request(
+                980.,
+                42.,
+                sample_button_motion(0.2),
+                JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
+                JellySurfaceDensity::Event,
+                false,
+            )
+        });
+
+        assert_eq!(cache.len(), 4);
+    }
+
     fn sample_request(
         width: f32,
         height: f32,
@@ -926,6 +1103,25 @@ mod tests {
             tone: JellyTone::Success,
             material,
             enabled: true,
+            active,
+        }
+    }
+
+    fn sample_surface_request(
+        width: f32,
+        height: f32,
+        motion: JellyMotionSnapshot,
+        material: JellyMaterialToken,
+        density: JellySurfaceDensity,
+        active: bool,
+    ) -> JellySurfaceImageRequest {
+        JellySurfaceImageRequest {
+            width,
+            height,
+            motion,
+            tone: JellyTone::Primary,
+            material,
+            density,
             active,
         }
     }

@@ -38,8 +38,9 @@ use crate::gui::motion::{JellyMotionSnapshot, wave_between};
 use crate::gui::rendering::jelly_image_cache::{
     JellyButtonImage, JellyButtonImageRequest, JellyCapsuleImage, JellyCapsuleImageRequest,
     JellyProgressImagePhase, JellyProgressImageQuality, JellyProgressImageRequest,
-    JellySwitchImage, JellySwitchImageRequest,
+    JellySurfaceImage, JellySurfaceImageRequest, JellySwitchImage, JellySwitchImageRequest,
 };
+use crate::gui::rendering::jelly_surface_bitmap::JellySurfaceDensity;
 use crate::gui::state::auth::{
     AuthPhase, AuthState, CredentialSource, QrState, SessionKind, SessionMode,
 };
@@ -56,9 +57,7 @@ use crate::gui::views::primitives::{
     form_section, metric_chip, option_group, panel, panel_title, phase_kind, product_mark,
     progress_visual_phase, status_capsule, status_dot, validation_box,
 };
-use crate::gui::views::workbench_widgets::{
-    empty_result_state, event_row, failure_row, result_row,
-};
+use crate::gui::views::workbench_widgets::{empty_result_state, failure_row, result_row};
 use crate::gui::workers::auth_worker::{
     spawn_auth_bootstrap_worker, spawn_qr_generate_worker, spawn_qr_poll_worker,
 };
@@ -1743,6 +1742,50 @@ impl BiliOpinionGui {
             }))
     }
 
+    fn event_surface_image(
+        &mut self,
+        palette: &Palette,
+        line: &EventLine,
+    ) -> Option<JellySurfaceImage> {
+        let density = match line.kind {
+            EventKind::Output => JellySurfaceDensity::Result,
+            _ => JellySurfaceDensity::Event,
+        };
+        let active = matches!(
+            line.kind,
+            EventKind::Video | EventKind::Comments | EventKind::Danmaku | EventKind::Output
+        );
+
+        self.visual
+            .image_cache
+            .surface_image(JellySurfaceImageRequest {
+                width: 980.,
+                height: if matches!(density, JellySurfaceDensity::Result) {
+                    48.
+                } else {
+                    42.
+                },
+                motion: JellyMotionSnapshot {
+                    pressure: if active { 0.18 } else { 0.08 },
+                    rebound: if active { 0.08 } else { 0. },
+                    squash_x: 0.,
+                    squash_y: 0.,
+                    rim_pressure: if active { 0.24 } else { 0.12 },
+                    gloss_phase: (self.visual.motion_tick as f32 * 0.09)
+                        .sin()
+                        .mul_add(0.5, 0.5),
+                    inner_lag: 0.,
+                    contact: if active { 0.18 } else { 0.08 },
+                    aura: if active { 0.18 } else { 0.08 },
+                    error_shake: 0.,
+                },
+                tone: event_tone(line.kind),
+                material: JellyMaterialToken::for_event(line.kind, palette),
+                density,
+                active,
+            })
+    }
+
     fn render_run_summary(&self, palette: &Palette) -> impl IntoElement {
         let Some(summary) = self.task.active_summary.as_ref() else {
             return div()
@@ -1779,8 +1822,9 @@ impl BiliOpinionGui {
             )
     }
 
-    fn render_event_panel(&self, palette: &Palette) -> impl IntoElement {
+    fn render_event_panel(&mut self, palette: &Palette) -> impl IntoElement {
         let dropped = self.events.dropped_count;
+        let event_lines: Vec<_> = self.events.lines.iter().rev().cloned().collect();
         panel(palette)
             .flex_1()
             .min_h(px(245.))
@@ -1810,13 +1854,12 @@ impl BiliOpinionGui {
                     .border_1()
                     .border_color(palette.border)
                     .bg(palette.event_bg)
-                    .children(
-                        self.events
-                            .lines
-                            .iter()
-                            .rev()
-                            .map(|line| event_row(line, palette)),
-                    )
+                    .children(event_lines.iter().map(|line| {
+                        let image = self.event_surface_image(palette, line);
+                        crate::gui::components::jelly_event_row::jelly_event_row(
+                            line, palette, image,
+                        )
+                    }))
                     .overflow_y_scrollbar(),
             )
     }

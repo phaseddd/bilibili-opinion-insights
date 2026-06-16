@@ -5,42 +5,10 @@ use gpui::{
 use gpui_component::{h_flex, v_flex};
 
 use crate::gui::materials::JellyMaterialToken;
-use crate::gui::state::events::{EventKind, EventLine};
+use crate::gui::state::events::EventKind;
 use crate::gui::state::results::{FailureItem, ResultItem, ResultKind};
 use crate::gui::theme::Palette;
-use crate::gui::views::primitives::{event_color, status_badge, status_dot};
-
-pub(crate) fn event_row(line: &EventLine, palette: &Palette) -> impl IntoElement {
-    let material = JellyMaterialToken::for_event(line.kind, palette);
-    h_flex()
-        .w_full()
-        .gap(px(8.))
-        .items_start()
-        .p(px(8.))
-        .rounded(px(8.))
-        .border_1()
-        .border_color(material.rim.opacity(0.16))
-        .bg(linear_gradient(
-            135.,
-            linear_color_stop(material.shell_start.opacity(0.05), 0.0),
-            linear_color_stop(material.shell_end.opacity(0.08), 1.0),
-        ))
-        .shadow(vec![gpui::BoxShadow {
-            color: material.state_aura.opacity(0.08),
-            offset: gpui::point(px(0.), px(4.)),
-            blur_radius: px(10.),
-            spread_radius: px(-6.),
-        }])
-        .child(status_dot(event_color(line.kind, palette)))
-        .child(
-            div()
-                .flex_1()
-                .text_size(px(12.))
-                .line_height(relative(1.3))
-                .text_color(palette.text)
-                .child(SharedString::from(line.text.clone())),
-        )
-}
+use crate::gui::views::primitives::{status_badge, status_dot};
 
 pub(crate) fn result_row(item: &ResultItem, palette: &Palette) -> impl IntoElement {
     let kind_label = match item.kind {
