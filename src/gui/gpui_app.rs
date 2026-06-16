@@ -1809,6 +1809,17 @@ impl BiliOpinionGui {
         )
     }
 
+    fn empty_result_surface_image(&mut self, palette: &Palette) -> Option<JellySurfaceImage> {
+        self.surface_image_for_kind(
+            palette,
+            EventKind::Output,
+            JellySurfaceDensity::Result,
+            980.,
+            78.,
+            false,
+        )
+    }
+
     fn surface_image_for_kind(
         &mut self,
         palette: &Palette,
@@ -1941,6 +1952,11 @@ impl BiliOpinionGui {
             136.,
             !self.results.failures.is_empty(),
         );
+        let empty_result_image = if self.results.jobs.is_empty() {
+            self.empty_result_surface_image(palette)
+        } else {
+            None
+        };
 
         panel(palette)
             .gap(px(12.))
@@ -1968,7 +1984,7 @@ impl BiliOpinionGui {
                         result_row(item, palette, image)
                     }))
                     .when(self.results.jobs.is_empty(), |this| {
-                        this.child(empty_result_state(palette))
+                        this.child(empty_result_state(palette, empty_result_image))
                     }),
             )
             .when(!self.results.failures.is_empty(), |this| {

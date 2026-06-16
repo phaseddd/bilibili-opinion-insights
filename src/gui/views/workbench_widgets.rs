@@ -168,22 +168,42 @@ fn surface_background(image: JellySurfaceImage, radius: f32) -> impl IntoElement
     .inset_0()
 }
 
-pub(crate) fn empty_result_state(palette: &Palette) -> impl IntoElement {
-    v_flex()
+pub(crate) fn empty_result_state(
+    palette: &Palette,
+    image: Option<JellySurfaceImage>,
+) -> impl IntoElement {
+    let has_image = image.is_some();
+    let container = v_flex()
+        .relative()
         .gap(px(6.))
         .p(px(12.))
         .rounded(px(10.))
+        .overflow_hidden()
         .border_1()
         .border_color(palette.border)
-        .bg(palette.surface_soft)
+        .bg(if has_image {
+            palette.surface_soft.opacity(0.62)
+        } else {
+            palette.surface_soft
+        });
+
+    let container = if let Some(image) = image {
+        container.child(surface_background(image, 10.))
+    } else {
+        container
+    };
+
+    container
         .child(
             div()
+                .relative()
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("暂无结果"),
         )
         .child(
             div()
+                .relative()
                 .text_size(px(11.))
                 .text_color(palette.muted)
                 .line_height(relative(1.3))
