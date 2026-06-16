@@ -65,6 +65,17 @@ pub(crate) struct JellyRibbonSdfSample {
     pub(crate) inside: bool,
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(crate) struct JellyRibbonAlphaMask {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) origin: RibbonPoint,
+    pub(crate) pixel_size: f32,
+    pub(crate) alpha: Vec<u8>,
+    pub(crate) progress: Vec<u8>,
+}
+
 pub(crate) fn jelly_round_rect(shape: JellyPathShape) -> Path<Pixels> {
     let width = shape.width.max(8.);
     let height = shape.height.max(8.);
@@ -166,6 +177,43 @@ pub(crate) fn sample_ribbon_sdf(
             normal: (0., 1.),
             inside: true,
         }
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn rasterize_ribbon_alpha_mask(
+    profile: &JellyRibbonProfile,
+    pixel_size: f32,
+    padding: f32,
+) -> JellyRibbonAlphaMask {
+    let pixel_size = pixel_size.max(0.25);
+    let padding = padding.max(0.);
+    let bounds = ribbon_profile_bounds(profile, padding);
+    let width = (((bounds.2 - bounds.0) / pixel_size).ceil() as usize).max(1);
+    let height = (((bounds.3 - bounds.1) / pixel_size).ceil() as usize).max(1);
+    let mut alpha = vec![0; width * height];
+    let mut progress = vec![0; width * height];
+
+    for row in 0..height {
+        let y = bounds.1 + (row as f32 + 0.5) * pixel_size;
+        for col in 0..width {
+            let x = bounds.0 + (col as f32 + 0.5) * pixel_size;
+            let sample = sample_ribbon_sdf(profile, x, y);
+            let edge_width = (pixel_size * 1.35).max(0.75);
+            let coverage = (0.5 - sample.signed_distance / edge_width).clamp(0., 1.);
+            let idx = row * width + col;
+            alpha[idx] = (coverage * 255.).round() as u8;
+            progress[idx] = (sample.progress * 255.).round() as u8;
+        }
+    }
+
+    JellyRibbonAlphaMask {
+        width,
+        height,
+        origin: (bounds.0, bounds.1),
+        pixel_size,
+        alpha,
+        progress,
     }
 }
 
@@ -306,6 +354,27 @@ fn profile_edges(profile: JellyRibbonProfile) -> RibbonEdges {
     (top, bottom)
 }
 
+fn ribbon_profile_bounds(profile: &JellyRibbonProfile, padding: f32) -> (f32, f32, f32, f32) {
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+
+    for point in profile.points {
+        let radius = point.half_thickness + padding;
+        min_x = min_x.min(point.center.0 - radius);
+        min_y = min_y.min(point.center.1 - radius);
+        max_x = max_x.max(point.center.0 + radius);
+        max_y = max_y.max(point.center.1 + radius);
+    }
+
+    if min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite() {
+        (min_x, min_y, max_x, max_y)
+    } else {
+        (0., 0., 1., 1.)
+    }
+}
+
 fn normalize(vector: RibbonPoint) -> RibbonPoint {
     let len = (vector.0 * vector.0 + vector.1 * vector.1).sqrt();
     if len > RIBBON_EPSILON {
@@ -398,7 +467,7 @@ mod tests {
     use super::{
         JellyRibbonChainShape, JellyRibbonShape, RIBBON_POINTS, jelly_chained_ribbon,
         jelly_chained_ribbon_highlight, jelly_chained_ribbon_shadow, jelly_ribbon_profile,
-        sample_ribbon_sdf,
+        rasterize_ribbon_alpha_mask, sample_ribbon_sdf,
     };
 
     #[test]
@@ -532,6 +601,60 @@ mod tests {
             assert!(point.half_thickness > 0.);
         }
         assert!(sample.inside);
+    }
+
+    #[test]
+    fn ribbon_alpha_mask_has_coverage_and_progress_gradient() {
+        let profile = jelly_ribbon_profile(sample_shape());
+        let mask = rasterize_ribbon_alpha_mask(&profile, 4., 10.);
+
+        assert!(mask.width > 8);
+        assert!(mask.height > 4);
+        assert_eq!(mask.alpha.len(), mask.width * mask.height);
+        assert_eq!(mask.progress.len(), mask.width * mask.height);
+        assert!(mask.origin.0.is_finite());
+        assert!(mask.origin.1.is_finite());
+        assert!(mask.pixel_size > 0.);
+        assert!(mask.alpha.iter().any(|alpha| *alpha > 220));
+        assert!(mask.alpha.contains(&0));
+
+        let covered_progress: Vec<u8> = mask
+            .alpha
+            .iter()
+            .zip(mask.progress.iter())
+            .filter_map(|(alpha, progress)| (*alpha > 160).then_some(*progress))
+            .collect();
+        let min_progress = covered_progress.iter().min().copied().unwrap_or(255);
+        let max_progress = covered_progress.iter().max().copied().unwrap_or(0);
+
+        assert!(min_progress < 80);
+        assert!(max_progress > 170);
+    }
+
+    #[test]
+    fn ribbon_alpha_mask_stays_bounded_at_low_progress() {
+        let shape = JellyRibbonChainShape {
+            shape: JellyRibbonShape {
+                origin_x: 10.,
+                origin_y: 10.,
+                width: 420.,
+                height: 42.,
+                progress: 0.001,
+                pressure: 0.9,
+                rebound: 0.7,
+                compression: 1.,
+                phase: 2.4,
+            },
+            chain: JellyProgressChainSnapshot {
+                offsets: [0.1, -0.12, -0.32, -0.5, -0.2, 0.12, 0.2, 0.1, 0.],
+            },
+        };
+        let profile = jelly_ribbon_profile(shape);
+        let mask = rasterize_ribbon_alpha_mask(&profile, 3., 8.);
+
+        assert!(mask.width < 120);
+        assert!(mask.height < 80);
+        assert!(mask.alpha.iter().any(|alpha| *alpha > 0));
     }
 
     fn sample_shape() -> JellyRibbonChainShape {
