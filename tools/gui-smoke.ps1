@@ -1,8 +1,10 @@
 param(
     [switch]$SkipBuild,
     [switch]$KeepArtifacts,
-    [int]$EnterX = 520,
-    [int]$EnterY = 690
+    [Nullable[int]]$EnterX = $null,
+    [Nullable[int]]$EnterY = $null,
+    [double]$EnterXRatio = 0.20,
+    [double]$EnterYRatio = 0.45
 )
 
 $ErrorActionPreference = 'Stop'
@@ -108,6 +110,45 @@ function Capture-Window {
     }
 }
 
+function Measure-ImageDifference {
+    param(
+        [string]$BeforePath,
+        [string]$AfterPath
+    )
+
+    $before = [System.Drawing.Bitmap]::FromFile($BeforePath)
+    $after = [System.Drawing.Bitmap]::FromFile($AfterPath)
+    try {
+        $width = [Math]::Min($before.Width, $after.Width)
+        $height = [Math]::Min($before.Height, $after.Height)
+        $stepX = [Math]::Max(1, [int]($width / 96))
+        $stepY = [Math]::Max(1, [int]($height / 64))
+        $total = 0.0
+        $samples = 0
+
+        for ($y = 0; $y -lt $height; $y += $stepY) {
+            for ($x = 0; $x -lt $width; $x += $stepX) {
+                $a = $before.GetPixel($x, $y)
+                $b = $after.GetPixel($x, $y)
+                $total += (
+                    [Math]::Abs($a.R - $b.R) +
+                    [Math]::Abs($a.G - $b.G) +
+                    [Math]::Abs($a.B - $b.B)
+                ) / 3.0
+                $samples += 1
+            }
+        }
+
+        if ($samples -eq 0) {
+            return 0.0
+        }
+        return $total / $samples
+    } finally {
+        $before.Dispose()
+        $after.Dispose()
+    }
+}
+
 try {
     $hwnd = Get-MainWindowHandle -Process $proc
     [GuiSmokeWin]::ShowWindow($hwnd, 3) | Out-Null
@@ -116,7 +157,18 @@ try {
 
     $entry = Capture-Window -Hwnd $hwnd -Path $entryPath
 
-    [GuiSmokeWin]::SetCursorPos($EnterX, $EnterY) | Out-Null
+    $clickX = if ($EnterX.HasValue) {
+        $EnterX.Value
+    } else {
+        $entry.left + [int][Math]::Round($entry.width * $EnterXRatio)
+    }
+    $clickY = if ($EnterY.HasValue) {
+        $EnterY.Value
+    } else {
+        $entry.top + [int][Math]::Round($entry.height * $EnterYRatio)
+    }
+
+    [GuiSmokeWin]::SetCursorPos($clickX, $clickY) | Out-Null
     Start-Sleep -Milliseconds 120
     [GuiSmokeWin]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 80
@@ -124,10 +176,18 @@ try {
     Start-Sleep -Seconds 2
 
     $workbench = Capture-Window -Hwnd $hwnd -Path $workbenchPath
+    $imageDiff = Measure-ImageDifference -BeforePath $entryPath -AfterPath $workbenchPath
+    if ($imageDiff -lt 4.0) {
+        throw "Workbench capture is too similar to entry capture (mean RGB diff $([Math]::Round($imageDiff, 2))). The Enter Workbench click may have missed."
+    }
 
     [pscustomobject]@{
         pid = $proc.Id
         hwnd = $hwnd.ToInt64()
+        clickX = $clickX
+        clickY = $clickY
+        clickMode = if ($EnterX.HasValue -or $EnterY.HasValue) { 'absolute' } else { 'window-ratio' }
+        imageDiff = [Math]::Round($imageDiff, 2)
         entry = $entry.path
         workbench = $workbench.path
         width = $workbench.width
