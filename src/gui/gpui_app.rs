@@ -608,16 +608,26 @@ impl BiliOpinionGui {
 
     fn enter_workbench(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.trigger_button_rebound(ButtonMotionId::EnterWorkbench, cx);
-        if self.auth.session.collection_ready().is_none() {
+        let Some(session) = self.auth.session.collection_ready() else {
             self.task.validation_error = Some("请先登录，或明确选择匿名进入。".to_string());
             cx.notify();
             return;
-        }
+        };
 
+        self.cancel_auth_worker();
+        self.auth.qr = None;
+        self.auth.phase = match session.kind {
+            SessionKind::LoggedIn => AuthPhase::LoggedIn,
+            SessionKind::Anonymous => AuthPhase::AnonymousAvailable,
+            SessionKind::Unknown => self.auth.phase,
+        };
+        self.auth.message = Some(format!("工作台已继承身份入口状态：{}", session.detail()));
+        self.auth.nav_error = None;
+        self.auth.last_checked_at = Some(SystemTime::now());
         self.app_view = AppView::Workbench;
         self.events.push(
             EventKind::System,
-            format!("进入工作台：{}", self.auth.session.detail()),
+            format!("进入工作台：{}", session.detail()),
         );
         cx.notify();
     }
@@ -842,6 +852,10 @@ impl BiliOpinionGui {
     }
 
     fn apply_auth_message(&mut self, message: AuthMessage, cx: &mut Context<Self>) {
+        if self.app_view == AppView::Workbench {
+            return;
+        }
+
         match message {
             AuthMessage::BootChecking => {
                 self.auth.set_phase(
