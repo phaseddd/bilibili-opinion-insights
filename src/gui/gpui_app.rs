@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::f32::consts::TAU;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -16,9 +15,7 @@ use gpui::{
     linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, relative, rgb, size,
 };
 use gpui_component::{
-    Root,
-    checkbox::Checkbox,
-    h_flex,
+    Root, h_flex,
     input::{Input, InputState},
     scroll::ScrollableElement as _,
     v_flex,
@@ -35,6 +32,18 @@ use crate::app::events::CollectionEvent;
 use crate::bili::auth::{LoginState, QrLoginSession, QrLoginStatus};
 use crate::bili::client::BiliClient;
 use crate::bili::video::normalize_bvid_input;
+use crate::gui::components::jelly_button::{
+    HeaderActionKind, HeaderButtonConfig, JellyActionTone, JellyButtonConfig, JellyButtonSize,
+    header_action_button, jelly_action_button,
+};
+use crate::gui::components::jelly_progress::{
+    JellyProgressPhase, jelly_progress as jelly_progress_component,
+};
+use crate::gui::components::jelly_switch::{
+    JellySwitchConfig, JellySwitchSize, JellySwitchTone, jelly_switch,
+};
+use crate::gui::motion::{jelly_rebound, wave_01, wave_between};
+use crate::gui::theme::Palette;
 
 const EVENT_LIMIT: usize = 240;
 const QR_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -441,8 +450,7 @@ impl VisualState {
             return 0.0;
         }
 
-        let t = age as f32 / 18.0;
-        ((t * TAU * 1.18).sin().abs() * (1.0 - t)).clamp(0.0, 1.0)
+        jelly_rebound(age, 18)
     }
 
     fn has_active_button_rebound(&self) -> bool {
@@ -1018,23 +1026,35 @@ impl BiliOpinionGui {
         }
     }
 
-    fn set_collect_comments(&mut self, checked: &bool, _: &mut Window, cx: &mut Context<Self>) {
-        self.form.collect_comments = *checked;
+    fn toggle_collect_comments(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.task.phase.is_busy() {
+            return;
+        }
+        self.form.collect_comments = !self.form.collect_comments;
         cx.notify();
     }
 
-    fn set_collect_danmaku(&mut self, checked: &bool, _: &mut Window, cx: &mut Context<Self>) {
-        self.form.collect_danmaku = *checked;
+    fn toggle_collect_danmaku(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.task.phase.is_busy() {
+            return;
+        }
+        self.form.collect_danmaku = !self.form.collect_danmaku;
         cx.notify();
     }
 
-    fn set_write_csv(&mut self, checked: &bool, _: &mut Window, cx: &mut Context<Self>) {
-        self.form.write_csv = *checked;
+    fn toggle_write_csv(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.task.phase.is_busy() {
+            return;
+        }
+        self.form.write_csv = !self.form.write_csv;
         cx.notify();
     }
 
-    fn set_write_jsonl(&mut self, checked: &bool, _: &mut Window, cx: &mut Context<Self>) {
-        self.form.write_jsonl = *checked;
+    fn toggle_write_jsonl(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.task.phase.is_busy() {
+            return;
+        }
+        self.form.write_jsonl = !self.form.write_jsonl;
         cx.notify();
     }
 
@@ -1815,8 +1835,9 @@ impl BiliOpinionGui {
                                                                 loading: false,
                                                                 motion_tick,
                                                                 group: "auth-enter-workbench-group",
-                                                                motion_id:
-                                                                    ButtonMotionId::EnterWorkbench,
+                                                                id_seed:
+                                                                    ButtonMotionId::EnterWorkbench
+                                                                        as usize,
                                                                 size: JellyButtonSize::Standard,
                                                                 rebound: enter_rebound,
                                                             },
@@ -1851,10 +1872,11 @@ impl BiliOpinionGui {
                                                                     || matches!(
                                                                         self.auth.phase,
                                                                         AuthPhase::BootChecking
-                                                                    ),
+                                                                ),
                                                                 motion_tick,
                                                                 group: "auth-start-qr-login-group",
-                                                                motion_id: ButtonMotionId::QrLogin,
+                                                                id_seed: ButtonMotionId::QrLogin
+                                                                    as usize,
                                                                 size: JellyButtonSize::Standard,
                                                                 rebound: qr_rebound,
                                                             },
@@ -1893,8 +1915,9 @@ impl BiliOpinionGui {
                                                                     == AuthPhase::BootChecking,
                                                                 motion_tick,
                                                                 group: "auth-recheck-group",
-                                                                motion_id:
-                                                                    ButtonMotionId::RecheckAuth,
+                                                                id_seed:
+                                                                    ButtonMotionId::RecheckAuth
+                                                                        as usize,
                                                                 size: JellyButtonSize::Standard,
                                                                 rebound: recheck_rebound,
                                                             },
@@ -1931,7 +1954,8 @@ impl BiliOpinionGui {
                                                                 loading: false,
                                                                 motion_tick,
                                                                 group: "auth-anonymous-group",
-                                                                motion_id: ButtonMotionId::Anonymous,
+                                                                id_seed: ButtonMotionId::Anonymous
+                                                                    as usize,
                                                                 size: JellyButtonSize::Standard,
                                                                 rebound: anonymous_rebound,
                                                             },
@@ -2044,7 +2068,7 @@ impl BiliOpinionGui {
                                 enabled: can_start,
                                 motion_tick: self.visual.motion_tick,
                                 group: "header-clear-group",
-                                motion_id: ButtonMotionId::HeaderClear,
+                                id_seed: ButtonMotionId::HeaderClear as usize,
                                 rebound: self
                                     .visual
                                     .button_rebound_amount(ButtonMotionId::HeaderClear),
@@ -2065,7 +2089,7 @@ impl BiliOpinionGui {
                                 enabled: self.task.phase == TaskPhase::Running,
                                 motion_tick: self.visual.motion_tick,
                                 group: "header-cancel-group",
-                                motion_id: ButtonMotionId::HeaderCancel,
+                                id_seed: ButtonMotionId::HeaderCancel as usize,
                                 rebound: self
                                     .visual
                                     .button_rebound_amount(ButtonMotionId::HeaderCancel),
@@ -2094,7 +2118,7 @@ impl BiliOpinionGui {
                                 enabled: can_start,
                                 motion_tick: self.visual.motion_tick,
                                 group: "header-start-group",
-                                motion_id: ButtonMotionId::HeaderStart,
+                                id_seed: ButtonMotionId::HeaderStart as usize,
                                 rebound: self
                                     .visual
                                     .button_rebound_amount(ButtonMotionId::HeaderStart),
@@ -2115,6 +2139,8 @@ impl BiliOpinionGui {
         palette: &Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let options_enabled = !self.task.phase.is_busy();
+
         panel(palette)
             .w(relative(0.3))
             .min_w(px(360.))
@@ -2146,36 +2172,96 @@ impl BiliOpinionGui {
             .child(option_group(
                 "采集内容",
                 h_flex()
-                    .gap(px(14.))
+                    .gap(px(12.))
                     .child(
-                        Checkbox::new("collect-comments")
-                            .label("评论")
-                            .checked(self.form.collect_comments)
-                            .on_click(cx.listener(Self::set_collect_comments)),
+                        jelly_switch(
+                            JellySwitchConfig {
+                                label: "评论",
+                                checked: self.form.collect_comments,
+                                enabled: options_enabled,
+                                tone: JellySwitchTone::Primary,
+                                size: JellySwitchSize::Standard,
+                                motion_tick: self.visual.motion_tick,
+                                group: "collect-comments-switch",
+                                id_seed: 101,
+                                active: self.task.phase.is_busy() && self.form.collect_comments,
+                            },
+                            palette,
+                        )
+                        .id("collect-comments")
+                        .when(options_enabled, |this| {
+                            this.cursor_pointer()
+                                .on_click(cx.listener(Self::toggle_collect_comments))
+                        }),
                     )
                     .child(
-                        Checkbox::new("collect-danmaku")
-                            .label("弹幕")
-                            .checked(self.form.collect_danmaku)
-                            .on_click(cx.listener(Self::set_collect_danmaku)),
+                        jelly_switch(
+                            JellySwitchConfig {
+                                label: "弹幕",
+                                checked: self.form.collect_danmaku,
+                                enabled: options_enabled,
+                                tone: JellySwitchTone::Cyan,
+                                size: JellySwitchSize::Standard,
+                                motion_tick: self.visual.motion_tick,
+                                group: "collect-danmaku-switch",
+                                id_seed: 102,
+                                active: self.task.phase.is_busy() && self.form.collect_danmaku,
+                            },
+                            palette,
+                        )
+                        .id("collect-danmaku")
+                        .when(options_enabled, |this| {
+                            this.cursor_pointer()
+                                .on_click(cx.listener(Self::toggle_collect_danmaku))
+                        }),
                     ),
                 palette,
             ))
             .child(option_group(
                 "评论输出",
                 h_flex()
-                    .gap(px(14.))
+                    .gap(px(12.))
                     .child(
-                        Checkbox::new("write-csv")
-                            .label("CSV")
-                            .checked(self.form.write_csv)
-                            .on_click(cx.listener(Self::set_write_csv)),
+                        jelly_switch(
+                            JellySwitchConfig {
+                                label: "CSV",
+                                checked: self.form.write_csv,
+                                enabled: options_enabled,
+                                tone: JellySwitchTone::Output,
+                                size: JellySwitchSize::Standard,
+                                motion_tick: self.visual.motion_tick,
+                                group: "write-csv-switch",
+                                id_seed: 103,
+                                active: self.task.phase.is_busy() && self.form.write_csv,
+                            },
+                            palette,
+                        )
+                        .id("write-csv")
+                        .when(options_enabled, |this| {
+                            this.cursor_pointer()
+                                .on_click(cx.listener(Self::toggle_write_csv))
+                        }),
                     )
                     .child(
-                        Checkbox::new("write-jsonl")
-                            .label("JSONL")
-                            .checked(self.form.write_jsonl)
-                            .on_click(cx.listener(Self::set_write_jsonl)),
+                        jelly_switch(
+                            JellySwitchConfig {
+                                label: "JSONL",
+                                checked: self.form.write_jsonl,
+                                enabled: options_enabled,
+                                tone: JellySwitchTone::Output,
+                                size: JellySwitchSize::Standard,
+                                motion_tick: self.visual.motion_tick,
+                                group: "write-jsonl-switch",
+                                id_seed: 104,
+                                active: self.task.phase.is_busy() && self.form.write_jsonl,
+                            },
+                            palette,
+                        )
+                        .id("write-jsonl")
+                        .when(options_enabled, |this| {
+                            this.cursor_pointer()
+                                .on_click(cx.listener(Self::toggle_write_jsonl))
+                        }),
                     ),
                 palette,
             ))
@@ -2258,9 +2344,9 @@ impl BiliOpinionGui {
                         palette,
                     )),
             )
-            .child(jelly_progress(
+            .child(jelly_progress_component(
                 self.task.progress.display_percent,
-                self.task.phase,
+                progress_visual_phase(self.task.phase),
                 self.visual.motion_tick,
                 palette,
             ))
@@ -2436,550 +2522,6 @@ impl BiliOpinionGui {
                 )
             })
     }
-}
-
-#[derive(Clone, Copy)]
-struct Palette {
-    app_bg: Hsla,
-    surface: Hsla,
-    surface_soft: Hsla,
-    event_bg: Hsla,
-    border: Hsla,
-    text: Hsla,
-    muted: Hsla,
-    accent: Hsla,
-    accent_2: Hsla,
-    success: Hsla,
-    warning: Hsla,
-    error: Hsla,
-}
-
-#[derive(Clone, Copy)]
-enum HeaderActionKind {
-    Ghost,
-    Outline,
-    Primary,
-}
-
-impl Default for Palette {
-    fn default() -> Self {
-        Self {
-            app_bg: rgb(0xf6f8fb).into(),
-            surface: rgb(0xffffff).into(),
-            surface_soft: rgb(0xf8fbff).into(),
-            event_bg: rgb(0xfbfcfe).into(),
-            border: rgb(0xd9e2ec).into(),
-            text: rgb(0x172033).into(),
-            muted: rgb(0x667085).into(),
-            accent: rgb(0x15c8d8).into(),
-            accent_2: rgb(0xfb7299).into(),
-            success: rgb(0x18a66a).into(),
-            warning: rgb(0xc47a10).into(),
-            error: rgb(0xd92d20).into(),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct HeaderButtonConfig {
-    kind: HeaderActionKind,
-    enabled: bool,
-    motion_tick: u64,
-    group: &'static str,
-    motion_id: ButtonMotionId,
-    rebound: f32,
-}
-
-fn header_action_button(
-    label: &'static str,
-    palette: &Palette,
-    config: HeaderButtonConfig,
-) -> gpui::Div {
-    let tone = match config.kind {
-        HeaderActionKind::Ghost => JellyActionTone::Neutral,
-        HeaderActionKind::Outline => JellyActionTone::Warning,
-        HeaderActionKind::Primary => JellyActionTone::Primary,
-    };
-
-    jelly_action_button(
-        label,
-        palette,
-        JellyButtonConfig {
-            tone,
-            enabled: config.enabled,
-            loading: false,
-            motion_tick: config.motion_tick,
-            group: config.group,
-            motion_id: config.motion_id,
-            size: JellyButtonSize::Compact,
-            rebound: config.rebound,
-        },
-    )
-}
-
-#[derive(Clone, Copy)]
-enum JellyActionTone {
-    Primary,
-    Cyan,
-    Warning,
-    Neutral,
-}
-
-#[derive(Clone, Copy)]
-enum JellyButtonSize {
-    Standard,
-    Compact,
-}
-
-#[derive(Clone, Copy)]
-struct JellyButtonMetrics {
-    height: f32,
-    min_width: f32,
-    outer_pad_x: f32,
-    text_size: f32,
-    inner_x: f32,
-    inner_y: f32,
-    highlight_h: f32,
-    shell_top: f32,
-    shell_bottom: f32,
-}
-
-impl JellyButtonSize {
-    fn metrics(self) -> JellyButtonMetrics {
-        match self {
-            Self::Standard => JellyButtonMetrics {
-                height: 52.,
-                min_width: 140.,
-                outer_pad_x: 18.,
-                text_size: 12.,
-                inner_x: 8.,
-                inner_y: 7.,
-                highlight_h: 8.,
-                shell_top: 2.,
-                shell_bottom: 4.,
-            },
-            Self::Compact => JellyButtonMetrics {
-                height: 40.,
-                min_width: 88.,
-                outer_pad_x: 12.,
-                text_size: 11.,
-                inner_x: 6.,
-                inner_y: 5.,
-                highlight_h: 5.5,
-                shell_top: 1.5,
-                shell_bottom: 3.,
-            },
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct JellyButtonMaterial {
-    start: Hsla,
-    end: Hsla,
-    rim: Hsla,
-    inner_top: Hsla,
-    inner_bottom: Hsla,
-    text: Hsla,
-    aura: Hsla,
-}
-
-#[derive(Clone, Copy)]
-struct JellyButtonMotion {
-    shell_top: f32,
-    shell_bottom: f32,
-    shell_bleed_x: f32,
-    inner_top: f32,
-    inner_bottom: f32,
-    gloss_top: f32,
-    gloss_inset: f32,
-    ridge_bottom: f32,
-    ridge_height: f32,
-    contact_y: f32,
-    contact_blur: f32,
-    breath: f32,
-    pop: f32,
-}
-
-#[derive(Clone, Copy)]
-struct JellyButtonConfig {
-    tone: JellyActionTone,
-    enabled: bool,
-    loading: bool,
-    motion_tick: u64,
-    group: &'static str,
-    motion_id: ButtonMotionId,
-    size: JellyButtonSize,
-    rebound: f32,
-}
-
-fn jelly_button_material(tone: JellyActionTone, palette: &Palette) -> JellyButtonMaterial {
-    match tone {
-        JellyActionTone::Primary => JellyButtonMaterial {
-            start: palette.accent_2,
-            end: palette.accent,
-            rim: hsla(0., 0., 1., 0.64),
-            inner_top: hsla(0., 0., 1., 0.95),
-            inner_bottom: hsla(190., 0.82, 0.92, 0.78),
-            text: rgb(0x0b6176).into(),
-            aura: palette.accent_2,
-        },
-        JellyActionTone::Cyan => JellyButtonMaterial {
-            start: palette.accent,
-            end: rgb(0x77e6f1).into(),
-            rim: hsla(0., 0., 1., 0.66),
-            inner_top: hsla(0., 0., 1., 0.94),
-            inner_bottom: hsla(188., 0.86, 0.91, 0.76),
-            text: rgb(0x075c67).into(),
-            aura: palette.accent,
-        },
-        JellyActionTone::Warning => JellyButtonMaterial {
-            start: palette.warning,
-            end: rgb(0xffbd78).into(),
-            rim: hsla(0., 0., 1., 0.58),
-            inner_top: hsla(0., 0., 1., 0.92),
-            inner_bottom: hsla(35., 0.92, 0.88, 0.76),
-            text: rgb(0x884900).into(),
-            aura: palette.warning,
-        },
-        JellyActionTone::Neutral => JellyButtonMaterial {
-            start: rgb(0xcaf7ff).into(),
-            end: rgb(0xffe1ed).into(),
-            rim: palette.accent.opacity(0.48),
-            inner_top: hsla(0., 0., 1., 0.92),
-            inner_bottom: hsla(332., 0.75, 0.95, 0.7),
-            text: rgb(0x233348).into(),
-            aura: palette.accent,
-        },
-    }
-}
-
-fn jelly_button_motion(
-    metrics: JellyButtonMetrics,
-    config: JellyButtonConfig,
-) -> JellyButtonMotion {
-    let pop = config.rebound.clamp(0.0, 1.0);
-    let breath = if config.loading {
-        wave_between(config.motion_tick, 0.18, 0.08, 0.2)
-    } else {
-        0.0
-    };
-    let size_factor = if matches!(config.size, JellyButtonSize::Standard) {
-        1.0
-    } else {
-        0.68
-    };
-
-    JellyButtonMotion {
-        shell_top: metrics.shell_top - pop * 2.4 * size_factor,
-        shell_bottom: metrics.shell_bottom - pop * 1.3 * size_factor,
-        shell_bleed_x: pop * 4.2 * size_factor,
-        inner_top: metrics.inner_y - pop * 1.2 * size_factor,
-        inner_bottom: metrics.inner_y + pop * 1.7 * size_factor,
-        gloss_top: 5. + pop * 1.6 * size_factor,
-        gloss_inset: 22. - pop * 3. * size_factor,
-        ridge_bottom: 7. - pop * 1.2 * size_factor,
-        ridge_height: if matches!(config.size, JellyButtonSize::Standard) {
-            6. + pop * 1.6
-        } else {
-            4. + pop
-        },
-        contact_y: 13. - pop * 3.2 * size_factor,
-        contact_blur: 26. + pop * 8. * size_factor,
-        breath,
-        pop,
-    }
-}
-
-fn jelly_action_button(
-    label: impl Into<String>,
-    palette: &Palette,
-    config: JellyButtonConfig,
-) -> gpui::Div {
-    let label = label.into();
-    let material = jelly_button_material(config.tone, palette);
-    let opacity = if config.enabled { 1.0 } else { 0.46 };
-    let metrics = config.size.metrics();
-    let motion = jelly_button_motion(metrics, config);
-    let group_name = SharedString::from(config.group);
-    let id_seed = config.motion_id as usize;
-
-    div()
-        .relative()
-        .group(group_name.clone())
-        .flex_shrink_0()
-        .h(px(metrics.height))
-        .min_w(px(metrics.min_width))
-        .px(px(metrics.outer_pad_x))
-        .rounded(px(999.))
-        .child(
-            div()
-                .id(("jelly-button-shell", id_seed))
-                .absolute()
-                .top(px(motion.shell_top))
-                .bottom(px(motion.shell_bottom))
-                .left(px(-motion.shell_bleed_x))
-                .right(px(-motion.shell_bleed_x))
-                .rounded(px(999.))
-                .overflow_hidden()
-                .border_1()
-                .border_color(material.rim.opacity((0.78 + motion.pop * 0.2) * opacity))
-                .bg(linear_gradient(
-                    135.,
-                    linear_color_stop(material.start.opacity(opacity), 0.0),
-                    linear_color_stop(material.end.opacity(opacity), 1.0),
-                ))
-                .shadow(vec![
-                    gpui::BoxShadow {
-                        color: material.aura.opacity((0.24 + motion.pop * 0.14) * opacity),
-                        offset: gpui::point(px(0.), px(motion.contact_y)),
-                        blur_radius: px(motion.contact_blur),
-                        spread_radius: px(-12.),
-                    },
-                    gpui::BoxShadow {
-                        color: material.end.opacity(0.12 * opacity),
-                        offset: gpui::point(px(0.), px(5.)),
-                        blur_radius: px(12.),
-                        spread_radius: px(-8.),
-                    },
-                    gpui::BoxShadow {
-                        color: hsla(0., 0., 1., 0.46 * opacity),
-                        offset: gpui::point(px(0.), px(1.)),
-                        blur_radius: px(0.),
-                        spread_radius: px(0.),
-                    },
-                ])
-                .when(config.enabled, |this| {
-                    this.hover(|this| {
-                        this.border_color(material.rim.opacity((0.96 * opacity).min(1.0)))
-                            .bg(linear_gradient(
-                                135.,
-                                linear_color_stop(
-                                    material.start.opacity((opacity + 0.08).min(1.0)),
-                                    0.0,
-                                ),
-                                linear_color_stop(
-                                    material.end.opacity((opacity + 0.1).min(1.0)),
-                                    1.0,
-                                ),
-                            ))
-                    })
-                })
-                .group_active(group_name.clone(), |this| {
-                    let active_top = if matches!(config.size, JellyButtonSize::Standard) {
-                        6.
-                    } else {
-                        4.2
-                    };
-                    let active_bottom = if matches!(config.size, JellyButtonSize::Standard) {
-                        1.4
-                    } else {
-                        1.
-                    };
-                    let active_bleed = if matches!(config.size, JellyButtonSize::Standard) {
-                        -4.
-                    } else {
-                        -2.6
-                    };
-
-                    this.top(px(active_top))
-                        .bottom(px(active_bottom))
-                        .left(px(active_bleed))
-                        .right(px(active_bleed))
-                        .border_color(material.rim.opacity(0.7 * opacity))
-                        .shadow(vec![gpui::BoxShadow {
-                            color: material.aura.opacity(0.18 * opacity),
-                            offset: gpui::point(px(0.), px(7.)),
-                            blur_radius: px(16.),
-                            spread_radius: px(-10.),
-                        }])
-                })
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(12.))
-                        .right(px(12.))
-                        .bottom(px(2.))
-                        .h(px(metrics.height * 0.24))
-                        .rounded(px(999.))
-                        .bg(hsla(0., 0., 0., 0.10 * opacity)),
-                )
-                .child(
-                    div()
-                        .id(("jelly-button-inner", id_seed))
-                        .absolute()
-                        .left(px(metrics.inner_x))
-                        .right(px(metrics.inner_x))
-                        .top(px(motion.inner_top.max(2.5)))
-                        .bottom(px(motion.inner_bottom.max(2.5)))
-                        .rounded(px(999.))
-                        .border_1()
-                        .border_color(hsla(
-                            0.,
-                            0.,
-                            1.,
-                            (0.56 + motion.breath + motion.pop * 0.22) * opacity,
-                        ))
-                        .bg(linear_gradient(
-                            180.,
-                            linear_color_stop(
-                                material.inner_top.opacity(
-                                    (0.96 + motion.breath * 0.18 + motion.pop * 0.05) * opacity,
-                                ),
-                                0.0,
-                            ),
-                            linear_color_stop(
-                                material
-                                    .inner_bottom
-                                    .opacity((0.86 + motion.pop * 0.1) * opacity),
-                                1.0,
-                            ),
-                        ))
-                        .shadow(vec![
-                            gpui::BoxShadow {
-                                color: hsla(0., 0., 1., (0.62 + motion.pop * 0.2) * opacity),
-                                offset: gpui::point(px(0.), px(1.)),
-                                blur_radius: px(0.),
-                                spread_radius: px(0.),
-                            },
-                            gpui::BoxShadow {
-                                color: material.start.opacity(0.16 * opacity),
-                                offset: gpui::point(px(0.), px(7.)),
-                                blur_radius: px(14.),
-                                spread_radius: px(-10.),
-                            },
-                        ])
-                        .group_active(group_name.clone(), |this| {
-                            this.top(px(metrics.inner_y + 3.))
-                                .bottom(px((metrics.inner_y - 2.).max(2.)))
-                                .border_color(material.rim.opacity(0.52))
-                                .bg(linear_gradient(
-                                    180.,
-                                    linear_color_stop(
-                                        material.inner_top.opacity(0.78 * opacity),
-                                        0.0,
-                                    ),
-                                    linear_color_stop(
-                                        material.inner_bottom.opacity(0.68 * opacity),
-                                        1.0,
-                                    ),
-                                ))
-                        }),
-                )
-                .child(
-                    div()
-                        .id(("jelly-button-gloss", id_seed))
-                        .absolute()
-                        .top(px(motion.gloss_top))
-                        .left(px(motion.gloss_inset))
-                        .right(px(motion.gloss_inset))
-                        .h(px(metrics.highlight_h))
-                        .rounded(px(999.))
-                        .bg(hsla(
-                            0.,
-                            0.,
-                            1.,
-                            (0.34 + motion.breath * 0.8 + motion.pop * 0.2) * opacity,
-                        ))
-                        .group_active(group_name.clone(), |this| {
-                            this.top(px(8.))
-                                .left(px(28.))
-                                .right(px(28.))
-                                .h(px((metrics.highlight_h - 1.5).max(3.)))
-                                .bg(hsla(0., 0., 1., 0.22 * opacity))
-                        }),
-                )
-                .child(
-                    div()
-                        .id(("jelly-button-ridge", id_seed))
-                        .absolute()
-                        .left(px(15.))
-                        .right(px(15.))
-                        .bottom(px(motion.ridge_bottom))
-                        .h(px(motion.ridge_height))
-                        .rounded(px(999.))
-                        .bg(linear_gradient(
-                            90.,
-                            linear_color_stop(
-                                hsla(0., 0., 1., (0.06 + motion.breath * 0.22) * opacity),
-                                0.0,
-                            ),
-                            linear_color_stop(
-                                hsla(0., 0., 1., (0.22 + motion.pop * 0.18) * opacity),
-                                1.0,
-                            ),
-                        ))
-                        .group_active(group_name.clone(), |this| {
-                            this.bottom(px(4.))
-                                .h(px(if matches!(config.size, JellyButtonSize::Standard) {
-                                    4.
-                                } else {
-                                    3.
-                                }))
-                                .bg(hsla(0., 0., 1., 0.1 * opacity))
-                        }),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(18.))
-                        .right(px(18.))
-                        .bottom(px(0.))
-                        .h(px(1.))
-                        .bg(material.rim.opacity((0.28 + motion.pop * 0.24) * opacity)),
-                ),
-        )
-        .child(
-            div()
-                .absolute()
-                .left(px(12.))
-                .right(px(12.))
-                .bottom(px(2.))
-                .h(px(8.))
-                .rounded(px(999.))
-                .bg(material.aura.opacity((0.05 + motion.pop * 0.05) * opacity)),
-        )
-        .child(
-            div()
-                .absolute()
-                .left(px(0.))
-                .right(px(0.))
-                .bottom(px(0.))
-                .h(px(2.))
-                .rounded(px(999.))
-                .bg(hsla(0., 0., 0., 0.06 * opacity)),
-        )
-        .child(
-            div()
-                .id(("jelly-button-label", id_seed))
-                .absolute()
-                .left(px(metrics.outer_pad_x * 0.5))
-                .right(px(metrics.outer_pad_x * 0.5))
-                .top(px(0.))
-                .bottom(px(0.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .group_active(SharedString::from(config.group), |this| {
-                    this.pt(px(if matches!(config.size, JellyButtonSize::Standard) {
-                        2.
-                    } else {
-                        1.
-                    }))
-                })
-                .child(
-                    div()
-                        .truncate()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(
-                            material
-                                .text
-                                .opacity(if config.enabled { 1.0 } else { 0.62 }),
-                        )
-                        .text_size(px(metrics.text_size))
-                        .child(SharedString::from(label)),
-                ),
-        )
 }
 
 fn glass_auth_panel(palette: &Palette) -> gpui::Div {
@@ -3456,14 +2998,6 @@ fn qr_elapsed_seconds(qr: &QrState) -> u64 {
         .as_secs()
 }
 
-fn wave_01(motion_tick: u64, speed: f32) -> f32 {
-    ((motion_tick as f32 * speed) % TAU).sin().mul_add(0.5, 0.5)
-}
-
-fn wave_between(motion_tick: u64, speed: f32, min: f32, max: f32) -> f32 {
-    min + (max - min) * wave_01(motion_tick, speed)
-}
-
 fn panel(palette: &Palette) -> gpui::Div {
     v_flex()
         .p(px(16.))
@@ -3545,91 +3079,6 @@ fn validation_box(message: &str, palette: &Palette) -> impl IntoElement {
                 .line_height(relative(1.3))
                 .text_color(palette.error)
                 .child(SharedString::from(message.to_string())),
-        )
-}
-
-fn jelly_progress(
-    percent: f32,
-    phase: TaskPhase,
-    motion_tick: u64,
-    palette: &Palette,
-) -> impl IntoElement {
-    let percent = percent.clamp(0., 100.);
-    let fill = (percent / 100.).clamp(0.02, 1.0);
-    let wobble = match phase {
-        TaskPhase::Running | TaskPhase::Cancelling => ((motion_tick % 5) as f32 - 2.) * 0.6,
-        _ => 0.,
-    };
-    let bubble_opacity = if percent > 1. { 0.92 } else { 0.0 };
-
-    v_flex()
-        .gap(px(8.))
-        .child(
-            div()
-                .relative()
-                .h(px(30.))
-                .w_full()
-                .rounded(px(999.))
-                .overflow_hidden()
-                .border_1()
-                .border_color(palette.accent.opacity(0.24))
-                .bg(linear_gradient(
-                    90.,
-                    linear_color_stop(rgb(0xeafcff), 0.0),
-                    linear_color_stop(rgb(0xffeff5), 1.0),
-                ))
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(4.))
-                        .left(px(4.))
-                        .bottom(px(4.))
-                        .w(relative(fill))
-                        .rounded(px(999.))
-                        .bg(linear_gradient(
-                            90.,
-                            linear_color_stop(palette.accent, 0.0),
-                            linear_color_stop(palette.accent_2, 1.0),
-                        ))
-                        .shadow_md()
-                        .child(
-                            div()
-                                .absolute()
-                                .top(px(3.))
-                                .left(px(14.))
-                                .right(px(14.))
-                                .h(px(7.))
-                                .rounded(px(999.))
-                                .bg(hsla(0., 0., 1., 0.38)),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .right(px(-10. + wobble))
-                                .top(px(-2.))
-                                .size(px(28.))
-                                .rounded(px(999.))
-                                .bg(hsla(0., 0., 1., bubble_opacity))
-                                .border_1()
-                                .border_color(hsla(0., 0., 1., 0.72)),
-                        ),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .right(px(14.))
-                        .top(px(7.))
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(palette.text)
-                        .child(format!("{percent:.0}%")),
-                ),
-        )
-        .child(
-            div()
-                .text_size(px(11.))
-                .text_color(palette.muted)
-                .child(progress_microcopy(phase)),
         )
 }
 
@@ -3866,14 +3315,14 @@ fn phase_kind(phase: TaskPhase) -> EventKind {
     }
 }
 
-fn progress_microcopy(phase: TaskPhase) -> &'static str {
+fn progress_visual_phase(phase: TaskPhase) -> JellyProgressPhase {
     match phase {
-        TaskPhase::Idle => "等待任务开始。",
-        TaskPhase::Validating => "正在检查输入和采集选项。",
-        TaskPhase::Running => "评论批次和弹幕分段会实时推动进度。",
-        TaskPhase::Cancelling => "正在等待当前采集任务退出。",
-        TaskPhase::Completed => "采集完成，可以复核输出结果。",
-        TaskPhase::Failed => "任务失败，请查看事件流中的错误。",
+        TaskPhase::Idle => JellyProgressPhase::Idle,
+        TaskPhase::Validating => JellyProgressPhase::Validating,
+        TaskPhase::Running => JellyProgressPhase::Running,
+        TaskPhase::Cancelling => JellyProgressPhase::Cancelling,
+        TaskPhase::Completed => JellyProgressPhase::Completed,
+        TaskPhase::Failed => JellyProgressPhase::Failed,
     }
 }
 
