@@ -4,7 +4,8 @@ param(
     [Nullable[int]]$EnterX = $null,
     [Nullable[int]]$EnterY = $null,
     [double]$EnterXRatio = 0.20,
-    [double]$EnterYRatio = 0.45
+    [double]$EnterYRatio = 0.45,
+    [double]$MinImageDiff = 4.0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -167,6 +168,18 @@ try {
     } else {
         $entry.top + [int][Math]::Round($entry.height * $EnterYRatio)
     }
+    $clickWindowX = $clickX - $entry.left
+    $clickWindowY = $clickY - $entry.top
+    $actualEnterXRatio = if ($entry.width -gt 0) {
+        [Math]::Round($clickWindowX / [double]$entry.width, 4)
+    } else {
+        0.0
+    }
+    $actualEnterYRatio = if ($entry.height -gt 0) {
+        [Math]::Round($clickWindowY / [double]$entry.height, 4)
+    } else {
+        0.0
+    }
 
     [GuiSmokeWin]::SetCursorPos($clickX, $clickY) | Out-Null
     Start-Sleep -Milliseconds 120
@@ -177,7 +190,7 @@ try {
 
     $workbench = Capture-Window -Hwnd $hwnd -Path $workbenchPath
     $imageDiff = Measure-ImageDifference -BeforePath $entryPath -AfterPath $workbenchPath
-    if ($imageDiff -lt 4.0) {
+    if ($imageDiff -lt $MinImageDiff) {
         throw "Workbench capture is too similar to entry capture (mean RGB diff $([Math]::Round($imageDiff, 2))). The Enter Workbench click may have missed."
     }
 
@@ -186,12 +199,20 @@ try {
         hwnd = $hwnd.ToInt64()
         clickX = $clickX
         clickY = $clickY
+        clickWindowX = $clickWindowX
+        clickWindowY = $clickWindowY
+        clickWindowXRatio = $actualEnterXRatio
+        clickWindowYRatio = $actualEnterYRatio
         clickMode = if ($EnterX.HasValue -or $EnterY.HasValue) { 'absolute' } else { 'window-ratio' }
         imageDiff = [Math]::Round($imageDiff, 2)
+        minImageDiff = $MinImageDiff
         entry = $entry.path
         workbench = $workbench.path
+        windowLeft = $workbench.left
+        windowTop = $workbench.top
         width = $workbench.width
         height = $workbench.height
+        area = $workbench.width * $workbench.height
     } | ConvertTo-Json -Compress
 } finally {
     if (-not $proc.HasExited) {
