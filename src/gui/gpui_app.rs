@@ -31,6 +31,7 @@ use crate::gui::components::jelly_progress::jelly_progress as jelly_progress_com
 use crate::gui::components::jelly_switch::{
     JellySwitchConfig, JellySwitchSize, JellySwitchTone, jelly_switch,
 };
+use crate::gui::components::jelly_task_lane::jelly_task_lane;
 use crate::gui::messages::{AuthMessage, GuiMessage};
 use crate::gui::motion::wave_between;
 use crate::gui::state::auth::{
@@ -38,8 +39,8 @@ use crate::gui::state::auth::{
 };
 use crate::gui::state::events::{EVENT_LIMIT, EventKind, EventLine, EventState};
 use crate::gui::state::results::{ResultItem, ResultState, format_collection_job};
-use crate::gui::state::task::{ProgressState, RunSummary, TaskPhase, TaskState};
-use crate::gui::state::visual::{ButtonMotionId, ButtonRebound, VisualState};
+use crate::gui::state::task::{RunSummary, TaskPhase, TaskState};
+use crate::gui::state::visual::{ButtonMotionId, VisualState};
 use crate::gui::theme::Palette;
 use crate::gui::views::auth_gate::{
     auth_lifecycle_block, auth_risk_block, auth_summary_block, glass_auth_panel, qr_helper_copy,
@@ -169,7 +170,7 @@ impl BiliOpinionGui {
     }
 
     fn start_qr_login(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.trigger_button_rebound(ButtonMotionId::QrLogin, cx);
+        self.trigger_button_motion(ButtonMotionId::QrLogin, cx);
         let cancel = self.new_auth_cancel();
         self.auth.qr = None;
         self.auth.credential_source = CredentialSource::QrLogin;
@@ -186,12 +187,12 @@ impl BiliOpinionGui {
     }
 
     fn recheck_auth(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.trigger_button_rebound(ButtonMotionId::RecheckAuth, cx);
+        self.trigger_button_motion(ButtonMotionId::RecheckAuth, cx);
         self.start_auth_bootstrap(cx);
     }
 
     fn continue_anonymous(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.trigger_button_rebound(ButtonMotionId::Anonymous, cx);
+        self.trigger_button_motion(ButtonMotionId::Anonymous, cx);
         self.cancel_auth_worker();
         self.auth.qr = None;
         self.auth.session = SessionMode::anonymous();
@@ -208,7 +209,7 @@ impl BiliOpinionGui {
     }
 
     fn enter_workbench(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.trigger_button_rebound(ButtonMotionId::EnterWorkbench, cx);
+        self.trigger_button_motion(ButtonMotionId::EnterWorkbench, cx);
         let Some(session) = self.auth.session.collection_ready() else {
             self.task.validation_error = Some("请先登录，或明确选择匿名进入。".to_string());
             cx.notify();
@@ -233,11 +234,8 @@ impl BiliOpinionGui {
         cx.notify();
     }
 
-    fn trigger_button_rebound(&mut self, id: ButtonMotionId, cx: &mut Context<Self>) {
-        self.visual.button_rebound = Some(ButtonRebound {
-            id,
-            started_tick: self.visual.motion_tick,
-        });
+    fn trigger_button_motion(&mut self, id: ButtonMotionId, cx: &mut Context<Self>) {
+        self.visual.trigger_button(id);
         self.ensure_motion_loop(cx);
         cx.notify();
     }
@@ -257,6 +255,7 @@ impl BiliOpinionGui {
                 let keep_running = match view.update(cx, |view, cx| {
                     if view.should_animate_visuals() {
                         view.visual.motion_tick = view.visual.motion_tick.wrapping_add(1);
+                        view.task.tick_visual_motion();
                         cx.notify();
                         true
                     } else {
@@ -291,7 +290,10 @@ impl BiliOpinionGui {
             TaskPhase::Validating | TaskPhase::Running | TaskPhase::Cancelling
         );
 
-        identity_motion || task_motion || self.visual.has_active_button_rebound()
+        identity_motion
+            || task_motion
+            || self.task.has_active_visual_motion()
+            || self.visual.has_active_control_motion()
     }
 
     fn build_draft(&self, cx: &App) -> Result<CollectionDraft, String> {
@@ -340,7 +342,7 @@ impl BiliOpinionGui {
     }
 
     fn start_collection(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.trigger_button_rebound(ButtonMotionId::HeaderStart, cx);
+        self.trigger_button_motion(ButtonMotionId::HeaderStart, cx);
         self.task.phase = TaskPhase::Validating;
         self.task.validation_error = None;
         cx.notify();
@@ -362,14 +364,15 @@ impl BiliOpinionGui {
             + draft.bvids.len() * usize::from(draft.collect_danmaku);
         let (sender, receiver) = mpsc::channel();
 
-        self.task.phase = TaskPhase::Running;
-        self.task.progress = ProgressState::with_total_units(total_units);
-        self.task.active_summary = Some(RunSummary {
-            videos: draft.bvids.clone(),
-            output: draft.output.clone(),
-            collect_comments: draft.collect_comments,
-            collect_danmaku: draft.collect_danmaku,
-        });
+        self.task.begin_run(
+            RunSummary {
+                videos: draft.bvids.clone(),
+                output: draft.output.clone(),
+                collect_comments: draft.collect_comments,
+                collect_danmaku: draft.collect_danmaku,
+            },
+            total_units,
+        );
         self.results = ResultState {
             output_root: Some(draft.output.clone()),
             ..ResultState::default()
@@ -414,6 +417,7 @@ impl BiliOpinionGui {
                     .push(EventKind::Success, format_collection_job(&job));
             }
             GuiMessage::Failure(failure) => {
+                self.task.mark_failure(&failure.bvid, &failure.kind);
                 self.events.push(
                     EventKind::Failure,
                     format!(
@@ -557,6 +561,8 @@ impl BiliOpinionGui {
             return;
         }
         self.form.collect_comments = !self.form.collect_comments;
+        self.visual.trigger_switch(101);
+        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
@@ -565,6 +571,8 @@ impl BiliOpinionGui {
             return;
         }
         self.form.collect_danmaku = !self.form.collect_danmaku;
+        self.visual.trigger_switch(102);
+        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
@@ -573,6 +581,8 @@ impl BiliOpinionGui {
             return;
         }
         self.form.write_csv = !self.form.write_csv;
+        self.visual.trigger_switch(103);
+        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
@@ -581,26 +591,28 @@ impl BiliOpinionGui {
             return;
         }
         self.form.write_jsonl = !self.form.write_jsonl;
+        self.visual.trigger_switch(104);
+        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
     fn clear_log(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.trigger_button_rebound(ButtonMotionId::HeaderClear, cx);
+        self.trigger_button_motion(ButtonMotionId::HeaderClear, cx);
         if self.task.phase.is_busy() {
             return;
         }
 
         self.events.clear();
         self.events.push(EventKind::System, "事件已清空。");
-        self.task.progress = ProgressState::default();
+        self.task.clear_idle_progress();
         self.results = ResultState::default();
         cx.notify();
     }
 
     fn request_cancel(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.trigger_button_rebound(ButtonMotionId::HeaderCancel, cx);
+        self.trigger_button_motion(ButtonMotionId::HeaderCancel, cx);
         if self.task.phase == TaskPhase::Running {
-            self.task.phase = TaskPhase::Cancelling;
+            self.task.request_cancel_visual();
             self.events.push(
                 EventKind::Warning,
                 "取消控制已进入产品化改造队列：当前 worker 仍会等待 collector 自然返回。",
@@ -736,14 +748,22 @@ impl BiliOpinionGui {
             _ => "扫码登录",
         };
         let shell_wave = wave_between(motion_tick, 0.13, 0.08, 0.18);
-        let enter_rebound = self
+        let enter_motion =
+            self.visual
+                .button_motion(ButtonMotionId::EnterWorkbench, false, !can_enter);
+        let qr_loading =
+            self.auth.should_show_qr() || matches!(self.auth.phase, AuthPhase::BootChecking);
+        let qr_motion = self
             .visual
-            .button_rebound_amount(ButtonMotionId::EnterWorkbench);
-        let qr_rebound = self.visual.button_rebound_amount(ButtonMotionId::QrLogin);
-        let recheck_rebound = self
+            .button_motion(ButtonMotionId::QrLogin, qr_loading, false);
+        let recheck_motion = self.visual.button_motion(
+            ButtonMotionId::RecheckAuth,
+            self.auth.phase == AuthPhase::BootChecking,
+            false,
+        );
+        let anonymous_motion = self
             .visual
-            .button_rebound_amount(ButtonMotionId::RecheckAuth);
-        let anonymous_rebound = self.visual.button_rebound_amount(ButtonMotionId::Anonymous);
+            .button_motion(ButtonMotionId::Anonymous, false, false);
 
         div()
             .size_full()
@@ -869,7 +889,7 @@ impl BiliOpinionGui {
                                                                     ButtonMotionId::EnterWorkbench
                                                                         as usize,
                                                                 size: JellyButtonSize::Standard,
-                                                                rebound: enter_rebound,
+                                                                motion: enter_motion,
                                                             },
                                                         )
                                                         .flex_1()
@@ -898,17 +918,13 @@ impl BiliOpinionGui {
                                                             JellyButtonConfig {
                                                                 tone: JellyActionTone::Cyan,
                                                                 enabled: can_login,
-                                                                loading: self.auth.should_show_qr()
-                                                                    || matches!(
-                                                                        self.auth.phase,
-                                                                        AuthPhase::BootChecking
-                                                                ),
+                                                                loading: qr_loading,
                                                                 motion_tick,
                                                                 group: "auth-start-qr-login-group",
                                                                 id_seed: ButtonMotionId::QrLogin
                                                                     as usize,
                                                                 size: JellyButtonSize::Standard,
-                                                                rebound: qr_rebound,
+                                                                motion: qr_motion,
                                                             },
                                                         )
                                                         .flex_1()
@@ -949,7 +965,7 @@ impl BiliOpinionGui {
                                                                     ButtonMotionId::RecheckAuth
                                                                         as usize,
                                                                 size: JellyButtonSize::Standard,
-                                                                rebound: recheck_rebound,
+                                                                motion: recheck_motion,
                                                             },
                                                         )
                                                         .flex_1()
@@ -987,7 +1003,7 @@ impl BiliOpinionGui {
                                                                 id_seed: ButtonMotionId::Anonymous
                                                                     as usize,
                                                                 size: JellyButtonSize::Standard,
-                                                                rebound: anonymous_rebound,
+                                                                motion: anonymous_motion,
                                                             },
                                                         )
                                                         .flex_1()
@@ -1099,9 +1115,11 @@ impl BiliOpinionGui {
                                 motion_tick: self.visual.motion_tick,
                                 group: "header-clear-group",
                                 id_seed: ButtonMotionId::HeaderClear as usize,
-                                rebound: self
-                                    .visual
-                                    .button_rebound_amount(ButtonMotionId::HeaderClear),
+                                motion: self.visual.button_motion(
+                                    ButtonMotionId::HeaderClear,
+                                    false,
+                                    false,
+                                ),
                             },
                         )
                         .id("clear-log-action")
@@ -1120,9 +1138,11 @@ impl BiliOpinionGui {
                                 motion_tick: self.visual.motion_tick,
                                 group: "header-cancel-group",
                                 id_seed: ButtonMotionId::HeaderCancel as usize,
-                                rebound: self
-                                    .visual
-                                    .button_rebound_amount(ButtonMotionId::HeaderCancel),
+                                motion: self.visual.button_motion(
+                                    ButtonMotionId::HeaderCancel,
+                                    self.task.phase == TaskPhase::Cancelling,
+                                    false,
+                                ),
                             },
                         )
                         .id("cancel-collection-action")
@@ -1149,9 +1169,11 @@ impl BiliOpinionGui {
                                 motion_tick: self.visual.motion_tick,
                                 group: "header-start-group",
                                 id_seed: ButtonMotionId::HeaderStart as usize,
-                                rebound: self
-                                    .visual
-                                    .button_rebound_amount(ButtonMotionId::HeaderStart),
+                                motion: self.visual.button_motion(
+                                    ButtonMotionId::HeaderStart,
+                                    self.task.phase.is_busy(),
+                                    self.task.phase == TaskPhase::Failed,
+                                ),
                             },
                         )
                         .id("start-collection-action")
@@ -1215,6 +1237,10 @@ impl BiliOpinionGui {
                                 group: "collect-comments-switch",
                                 id_seed: 101,
                                 active: self.task.phase.is_busy() && self.form.collect_comments,
+                                motion: self.visual.switch_motion(
+                                    101,
+                                    self.task.phase.is_busy() && self.form.collect_comments,
+                                ),
                             },
                             palette,
                         )
@@ -1236,6 +1262,10 @@ impl BiliOpinionGui {
                                 group: "collect-danmaku-switch",
                                 id_seed: 102,
                                 active: self.task.phase.is_busy() && self.form.collect_danmaku,
+                                motion: self.visual.switch_motion(
+                                    102,
+                                    self.task.phase.is_busy() && self.form.collect_danmaku,
+                                ),
                             },
                             palette,
                         )
@@ -1263,6 +1293,10 @@ impl BiliOpinionGui {
                                 group: "write-csv-switch",
                                 id_seed: 103,
                                 active: self.task.phase.is_busy() && self.form.write_csv,
+                                motion: self.visual.switch_motion(
+                                    103,
+                                    self.task.phase.is_busy() && self.form.write_csv,
+                                ),
                             },
                             palette,
                         )
@@ -1284,6 +1318,10 @@ impl BiliOpinionGui {
                                 group: "write-jsonl-switch",
                                 id_seed: 104,
                                 active: self.task.phase.is_busy() && self.form.write_jsonl,
+                                motion: self.visual.switch_motion(
+                                    104,
+                                    self.task.phase.is_busy() && self.form.write_jsonl,
+                                ),
                             },
                             palette,
                         )
@@ -1375,11 +1413,15 @@ impl BiliOpinionGui {
                     )),
             )
             .child(jelly_progress_component(
-                self.task.progress.display_percent,
+                self.task
+                    .progress
+                    .motion_snapshot(self.task.phase, self.visual.motion_tick),
                 progress_visual_phase(self.task.phase),
-                self.visual.motion_tick,
                 palette,
             ))
+            .when(!self.task.lanes.is_empty(), |this| {
+                this.child(self.render_task_lanes(palette))
+            })
             .child(
                 v_flex()
                     .gap(px(10.))
@@ -1413,6 +1455,15 @@ impl BiliOpinionGui {
                     ])),
             )
             .child(self.render_run_summary(palette))
+    }
+
+    fn render_task_lanes(&self, palette: &Palette) -> impl IntoElement {
+        v_flex().gap(px(8.)).children(
+            self.task
+                .lanes
+                .iter()
+                .map(|lane| jelly_task_lane(lane, self.visual.motion_tick, palette)),
+        )
     }
 
     fn render_run_summary(&self, palette: &Palette) -> impl IntoElement {

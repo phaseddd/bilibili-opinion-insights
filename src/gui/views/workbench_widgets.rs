@@ -1,12 +1,17 @@
-use gpui::{FontWeight, IntoElement, ParentElement, SharedString, Styled as _, div, px, relative};
+use gpui::{
+    FontWeight, IntoElement, ParentElement, SharedString, Styled as _, div, linear_color_stop,
+    linear_gradient, px, relative,
+};
 use gpui_component::{h_flex, v_flex};
 
+use crate::gui::materials::JellyMaterialToken;
 use crate::gui::state::events::{EventKind, EventLine};
 use crate::gui::state::results::{FailureItem, ResultItem, ResultKind};
 use crate::gui::theme::Palette;
 use crate::gui::views::primitives::{event_color, status_badge, status_dot};
 
 pub(crate) fn event_row(line: &EventLine, palette: &Palette) -> impl IntoElement {
+    let material = JellyMaterialToken::for_event(line.kind, palette);
     h_flex()
         .w_full()
         .gap(px(8.))
@@ -14,8 +19,18 @@ pub(crate) fn event_row(line: &EventLine, palette: &Palette) -> impl IntoElement
         .p(px(8.))
         .rounded(px(8.))
         .border_1()
-        .border_color(event_color(line.kind, palette).opacity(0.14))
-        .bg(event_color(line.kind, palette).opacity(0.055))
+        .border_color(material.rim.opacity(0.16))
+        .bg(linear_gradient(
+            135.,
+            linear_color_stop(material.shell_start.opacity(0.05), 0.0),
+            linear_color_stop(material.shell_end.opacity(0.08), 1.0),
+        ))
+        .shadow(vec![gpui::BoxShadow {
+            color: material.state_aura.opacity(0.08),
+            offset: gpui::point(px(0.), px(4.)),
+            blur_radius: px(10.),
+            spread_radius: px(-6.),
+        }])
         .child(status_dot(event_color(line.kind, palette)))
         .child(
             div()
@@ -36,6 +51,7 @@ pub(crate) fn result_row(item: &ResultItem, palette: &Palette) -> impl IntoEleme
         ResultKind::Comments => EventKind::Comments,
         ResultKind::Danmaku => EventKind::Danmaku,
     };
+    let material = JellyMaterialToken::for_event(kind, palette);
     h_flex()
         .w_full()
         .gap(px(10.))
@@ -43,8 +59,18 @@ pub(crate) fn result_row(item: &ResultItem, palette: &Palette) -> impl IntoEleme
         .p(px(10.))
         .rounded(px(10.))
         .border_1()
-        .border_color(palette.border)
-        .bg(palette.surface_soft)
+        .border_color(material.rim.opacity(0.16))
+        .bg(linear_gradient(
+            135.,
+            linear_color_stop(material.shell_start.opacity(0.06), 0.0),
+            linear_color_stop(material.shell_end.opacity(0.08), 1.0),
+        ))
+        .shadow(vec![gpui::BoxShadow {
+            color: material.state_aura.opacity(0.08),
+            offset: gpui::point(px(0.), px(5.)),
+            blur_radius: px(12.),
+            spread_radius: px(-8.),
+        }])
         .child(status_badge(kind_label, kind, palette))
         .child(
             v_flex()
@@ -78,14 +104,25 @@ pub(crate) fn result_row(item: &ResultItem, palette: &Palette) -> impl IntoEleme
 }
 
 pub(crate) fn failure_row(failure: &FailureItem, palette: &Palette) -> impl IntoElement {
+    let material = JellyMaterialToken::for_tone(crate::gui::materials::JellyTone::Error, palette);
     h_flex()
         .gap(px(8.))
         .p(px(10.))
         .rounded(px(10.))
         .border_1()
-        .border_color(palette.error.opacity(0.22))
-        .bg(palette.error.opacity(0.06))
-        .child(status_dot(palette.error))
+        .border_color(material.rim.opacity(0.18))
+        .bg(linear_gradient(
+            135.,
+            linear_color_stop(material.shell_start.opacity(0.06), 0.0),
+            linear_color_stop(material.shell_end.opacity(0.08), 1.0),
+        ))
+        .shadow(vec![gpui::BoxShadow {
+            color: material.state_aura.opacity(0.08),
+            offset: gpui::point(px(0.), px(5.)),
+            blur_radius: px(12.),
+            spread_radius: px(-8.),
+        }])
+        .child(status_dot(material.state_aura))
         .child(
             div()
                 .flex_1()

@@ -5,6 +5,7 @@ use gpui::{
 use gpui_component::{h_flex, v_flex};
 
 use crate::gui::components::jelly_progress::JellyProgressPhase;
+use crate::gui::materials::JellyMaterialToken;
 use crate::gui::state::events::EventKind;
 use crate::gui::state::task::TaskPhase;
 use crate::gui::theme::Palette;
@@ -132,6 +133,7 @@ pub(crate) fn status_badge(
     palette: &Palette,
 ) -> impl IntoElement {
     let color = event_color(kind, palette);
+    let material = JellyMaterialToken::for_event(kind, palette);
     h_flex()
         .flex_shrink_0()
         .items_center()
@@ -140,8 +142,18 @@ pub(crate) fn status_badge(
         .py(px(5.))
         .rounded(px(999.))
         .border_1()
-        .border_color(color.opacity(0.25))
-        .bg(color.opacity(0.09))
+        .border_color(material.rim.opacity(0.34))
+        .bg(linear_gradient(
+            135.,
+            linear_color_stop(material.shell_start.opacity(0.13), 0.0),
+            linear_color_stop(material.shell_end.opacity(0.16), 1.0),
+        ))
+        .shadow(vec![gpui::BoxShadow {
+            color: material.state_aura.opacity(0.10),
+            offset: gpui::point(px(0.), px(5.)),
+            blur_radius: px(12.),
+            spread_radius: px(-7.),
+        }])
         .child(status_dot(color))
         .child(
             div()

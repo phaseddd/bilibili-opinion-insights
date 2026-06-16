@@ -1,9 +1,11 @@
-use gpui::{
-    FontWeight, IntoElement, ParentElement, Styled as _, div, hsla, linear_color_stop,
-    linear_gradient, px, relative, rgb,
-};
+use gpui::{FontWeight, IntoElement, ParentElement, Styled as _, Window, canvas, div, px};
 
-use crate::gui::motion::wave_between;
+use crate::gui::materials::{JellyMaterialToken, JellyTone};
+use crate::gui::motion::{JellyMotionSnapshot, JellyProgressMotionSnapshot};
+use crate::gui::rendering::jelly_geometry::{
+    JellyPathShape, JellyRibbonChainShape, JellyRibbonShape, jelly_chained_ribbon,
+    jelly_chained_ribbon_highlight, jelly_chained_ribbon_shadow, jelly_round_rect,
+};
 use crate::gui::theme::Palette;
 
 #[derive(Clone, Copy)]
@@ -17,129 +19,140 @@ pub enum JellyProgressPhase {
 }
 
 pub fn jelly_progress(
-    percent: f32,
+    motion: JellyProgressMotionSnapshot,
     phase: JellyProgressPhase,
-    motion_tick: u64,
     palette: &Palette,
 ) -> impl IntoElement {
-    let percent = percent.clamp(0., 100.);
+    let percent = motion.display_percent.clamp(0., 100.);
+    let target_percent = motion.target_percent.clamp(0., 100.);
     let fill = (percent / 100.).clamp(0.02, 1.);
-    let active = matches!(
-        phase,
-        JellyProgressPhase::Validating
-            | JellyProgressPhase::Running
-            | JellyProgressPhase::Cancelling
-    );
-    let pulse = if active {
-        wave_between(motion_tick, 0.18, 0.08, 0.22)
+    let token = progress_token(phase, palette);
+    let motion_snapshot = JellyMotionSnapshot {
+        pressure: motion.pressure,
+        rebound: motion.rebound,
+        squash_x: motion.squash_x,
+        squash_y: motion.squash_y,
+        rim_pressure: motion.rim_pressure,
+        gloss_phase: motion.gloss_phase,
+        inner_lag: motion.inner_lag,
+        contact: motion.contact,
+        aura: motion.aura,
+        error_shake: motion.error_shake,
+    };
+    let microcopy = progress_microcopy(phase);
+    let percent_label = if (target_percent - percent).abs() > 1.2 {
+        format!("{percent:.0}% -> {target_percent:.0}%")
     } else {
-        0.
+        format!("{percent:.0}%")
     };
-    let cap_wobble = match phase {
-        JellyProgressPhase::Running => ((motion_tick as f32 * 0.52).sin()) * 3.2,
-        JellyProgressPhase::Cancelling => -((motion_tick as f32 * 0.35).sin().abs()) * 3.8,
-        JellyProgressPhase::Failed => -1.8,
-        _ => 0.,
-    };
-    let aura = match phase {
-        JellyProgressPhase::Completed => palette.success,
-        JellyProgressPhase::Failed => palette.error,
-        JellyProgressPhase::Cancelling => palette.warning,
-        _ => palette.accent,
-    };
-    let bubble_opacity = if percent > 1. { 0.9 } else { 0.0 };
+    let pulse = motion.pulse.clamp(0., 1.);
+    let velocity_nudge = (motion.velocity * 4.).clamp(-5., 5.);
 
     gpui_component::v_flex()
         .gap(px(8.))
         .child(
             div()
                 .relative()
-                .h(px(34.))
+                .h(px(46.))
                 .w_full()
-                .rounded(px(999.))
-                .overflow_hidden()
-                .border_1()
-                .border_color(aura.opacity(0.22 + pulse * 0.4))
-                .bg(linear_gradient(
-                    90.,
-                    linear_color_stop(rgb(0xeafcff), 0.0),
-                    linear_color_stop(rgb(0xffeff5), 1.0),
-                ))
-                .shadow(vec![gpui::BoxShadow {
-                    color: aura.opacity(0.12 + pulse * 0.12),
-                    offset: gpui::point(px(0.), px(12.)),
-                    blur_radius: px(28.),
-                    spread_radius: px(-18.),
-                }])
                 .child(
-                    div()
-                        .absolute()
-                        .left(px(6.))
-                        .right(px(6.))
-                        .top(px(6.))
-                        .bottom(px(6.))
-                        .rounded(px(999.))
-                        .bg(hsla(210., 0.32, 0.18, 0.08)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(5.))
-                        .left(px(5.))
-                        .bottom(px(5.))
-                        .w(relative(fill))
-                        .rounded(px(999.))
-                        .overflow_hidden()
-                        .bg(linear_gradient(
-                            90.,
-                            linear_color_stop(palette.accent, 0.0),
-                            linear_color_stop(palette.accent_2, 1.0),
-                        ))
-                        .shadow(vec![
-                            gpui::BoxShadow {
-                                color: aura.opacity(0.26 + pulse * 0.3),
-                                offset: gpui::point(px(0.), px(8.)),
-                                blur_radius: px(18.),
-                                spread_radius: px(-10.),
-                            },
-                            gpui::BoxShadow {
-                                color: hsla(0., 0., 1., 0.48),
-                                offset: gpui::point(px(0.), px(1.)),
-                                blur_radius: px(0.),
-                                spread_radius: px(0.),
-                            },
-                        ])
-                        .child(
-                            div()
-                                .absolute()
-                                .top(px(3.))
-                                .left(px(16.))
-                                .right(px(22.))
-                                .h(px(7.))
-                                .rounded(px(999.))
-                                .bg(hsla(0., 0., 1., 0.36 + pulse * 0.5)),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .right(px(-13. + cap_wobble))
-                                .top(px(-3.))
-                                .w(px(34. + pulse * 12.))
-                                .h(px(30. - pulse * 4.))
-                                .rounded(px(999.))
-                                .bg(hsla(0., 0., 1., bubble_opacity))
-                                .border_1()
-                                .border_color(hsla(0., 0., 1., 0.72)),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .right(px(12. + cap_wobble * 0.4))
-                                .top(px(6.))
-                                .size(px(9. + pulse * 8.))
-                                .rounded(px(999.))
-                                .bg(hsla(0., 0., 1., (0.26 + pulse) * bubble_opacity)),
-                        ),
+                    canvas(
+                        move |bounds, _window: &mut Window, _cx| JellyPathShape {
+                            origin_x: f32::from(bounds.origin.x) + motion_snapshot.error_shake * 8.,
+                            origin_y: f32::from(bounds.origin.y),
+                            width: f32::from(bounds.size.width)
+                                - motion_snapshot.error_shake.abs() * 16.,
+                            height: f32::from(bounds.size.height),
+                            inset: 0.,
+                            inner_inset: 0.,
+                            cap_taper: fill,
+                            pressure: motion_snapshot.pressure,
+                            rebound: motion_snapshot.rebound,
+                            squash_x: motion_snapshot.squash_x,
+                            squash_y: motion_snapshot.squash_y,
+                        },
+                        move |bounds, shape, window: &mut Window, _cx| {
+                            let origin_x = f32::from(bounds.origin.x);
+                            let origin_y = f32::from(bounds.origin.y);
+                            let track_h = f32::from(bounds.size.height);
+                            let track_w = f32::from(bounds.size.width);
+                            let outer = jelly_round_rect(shape);
+                            let shell_color = token.shell_start.opacity(0.12 + pulse * 0.08);
+                            window.paint_path(outer, shell_color);
+
+                            let shell_outline = jelly_round_rect(JellyPathShape {
+                                origin_x,
+                                origin_y,
+                                width: track_w,
+                                height: track_h,
+                                inset: 0.,
+                                inner_inset: 0.,
+                                cap_taper: fill,
+                                pressure: motion_snapshot.pressure,
+                                rebound: motion_snapshot.rebound,
+                                squash_x: motion_snapshot.squash_x,
+                                squash_y: motion_snapshot.squash_y,
+                            });
+                            window.paint_path(
+                                shell_outline,
+                                token
+                                    .rim
+                                    .opacity(0.12 + motion_snapshot.rim_pressure * 0.14),
+                            );
+
+                            let ribbon_shape = JellyRibbonShape {
+                                origin_x: origin_x + 3. + velocity_nudge,
+                                origin_y: origin_y + 2.,
+                                width: track_w - 6.,
+                                height: track_h - 4.,
+                                progress: fill,
+                                pressure: motion_snapshot.pressure,
+                                rebound: motion_snapshot.rebound,
+                                compression: motion_snapshot.contact,
+                                phase: motion_snapshot.gloss_phase * std::f32::consts::TAU,
+                            };
+                            let chained_shape = JellyRibbonChainShape {
+                                shape: ribbon_shape,
+                                chain: motion.chain,
+                            };
+                            let ribbon_shadow = jelly_chained_ribbon_shadow(chained_shape);
+                            window.paint_path(
+                                ribbon_shadow,
+                                token
+                                    .contact_shadow
+                                    .opacity(0.2 + motion_snapshot.contact * 0.09),
+                            );
+
+                            let ribbon = jelly_chained_ribbon(chained_shape);
+                            window.paint_path(ribbon, token.shell_mid.opacity(0.76 + pulse * 0.14));
+
+                            let ribbon_highlight = jelly_chained_ribbon_highlight(chained_shape);
+                            window.paint_path(
+                                ribbon_highlight,
+                                token.specular.opacity(0.16 + pulse * 0.14),
+                            );
+
+                            let inner_width = (track_w * fill).max(track_h * 0.34 + 18.);
+                            let inner_shape = JellyPathShape {
+                                origin_x: origin_x + 7. + velocity_nudge * 0.32,
+                                origin_y: origin_y + track_h * 0.2 + motion_snapshot.pressure * 1.2,
+                                width: inner_width * (0.96 - motion_snapshot.squash_y * 0.04),
+                                height: track_h * (0.58 - motion_snapshot.pressure * 0.04),
+                                inset: 7.,
+                                inner_inset: 5.,
+                                cap_taper: (fill * 0.26).clamp(0., 1.),
+                                pressure: motion_snapshot.pressure,
+                                rebound: motion_snapshot.rebound,
+                                squash_x: motion_snapshot.squash_x,
+                                squash_y: motion_snapshot.squash_y * 0.54,
+                            };
+                            let fill_path = jelly_round_rect(inner_shape);
+                            window
+                                .paint_path(fill_path, token.core_top.opacity(0.44 + pulse * 0.12));
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
                 )
                 .child(
                     div()
@@ -148,16 +161,30 @@ pub fn jelly_progress(
                         .top(px(8.))
                         .text_size(px(12.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(palette.text)
-                        .child(format!("{percent:.0}%")),
+                        .text_color(token.text)
+                        .child(percent_label),
                 ),
         )
         .child(
             div()
                 .text_size(px(11.))
                 .text_color(palette.muted)
-                .child(progress_microcopy(phase)),
+                .child(microcopy),
         )
+}
+
+fn progress_token(phase: JellyProgressPhase, palette: &Palette) -> JellyMaterialToken {
+    JellyMaterialToken::for_tone(
+        match phase {
+            JellyProgressPhase::Idle => JellyTone::Neutral,
+            JellyProgressPhase::Validating => JellyTone::Warning,
+            JellyProgressPhase::Running => JellyTone::Primary,
+            JellyProgressPhase::Cancelling => JellyTone::Warning,
+            JellyProgressPhase::Completed => JellyTone::Success,
+            JellyProgressPhase::Failed => JellyTone::Error,
+        },
+        palette,
+    )
 }
 
 fn progress_microcopy(phase: JellyProgressPhase) -> &'static str {
