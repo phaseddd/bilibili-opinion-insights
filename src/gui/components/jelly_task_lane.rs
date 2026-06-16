@@ -1,6 +1,6 @@
 use gpui::{
-    FontWeight, IntoElement, ParentElement, SharedString, Styled as _, Window, canvas, div,
-    linear_color_stop, linear_gradient, px, relative,
+    Bounds, Corners, FontWeight, IntoElement, ParentElement, SharedString, Styled as _, Window,
+    canvas, div, linear_color_stop, linear_gradient, point, px, relative, size,
 };
 use gpui_component::{h_flex, v_flex};
 
@@ -10,6 +10,7 @@ use crate::gui::rendering::jelly_geometry::{
     JellyPathShape, JellyRibbonChainShape, JellyRibbonShape, jelly_chained_ribbon,
     jelly_chained_ribbon_highlight, jelly_chained_ribbon_shadow, jelly_round_rect,
 };
+use crate::gui::rendering::jelly_image_cache::JellyProgressImage;
 use crate::gui::state::events::EventKind;
 use crate::gui::state::task::{TaskLane, TaskLanePhase};
 use crate::gui::theme::Palette;
@@ -19,6 +20,7 @@ pub(crate) fn jelly_task_lane(
     lane: &TaskLane,
     motion_tick: u64,
     palette: &Palette,
+    bitmap: Option<JellyProgressImage>,
 ) -> impl IntoElement {
     let motion = lane.motion_snapshot(motion_tick);
     let material = lane_material(lane, palette);
@@ -68,7 +70,7 @@ pub(crate) fn jelly_task_lane(
             h_flex()
                 .items_center()
                 .gap(px(10.))
-                .child(jelly_lane_ribbon(motion, material))
+                .child(jelly_lane_ribbon(motion, material, bitmap))
                 .child(
                     div()
                         .w(px(54.))
@@ -91,6 +93,7 @@ pub(crate) fn jelly_task_lane(
 fn jelly_lane_ribbon(
     motion: JellyProgressMotionSnapshot,
     material: JellyMaterialToken,
+    bitmap: Option<JellyProgressImage>,
 ) -> impl IntoElement {
     let fill = (motion.display_percent / 100.).clamp(0.03, 1.);
     let motion_snapshot = JellyMotionSnapshot {
@@ -154,10 +157,24 @@ fn jelly_lane_ribbon(
                         .contact_shadow
                         .opacity(0.18 + motion_snapshot.contact * 0.08),
                 );
-                window.paint_path(
-                    jelly_chained_ribbon(chained_shape),
-                    material.shell_mid.opacity(0.72 + pulse * 0.12),
-                );
+                if let Some(bitmap) = bitmap.clone() {
+                    let bitmap_bounds = Bounds::new(
+                        point(px(origin_x + 2. + velocity_nudge), px(origin_y)),
+                        size(px(track_w - 4.), px(track_h)),
+                    );
+                    let _ = window.paint_image(
+                        bitmap_bounds,
+                        Corners::from(px(track_h * 0.5)),
+                        bitmap.image,
+                        0,
+                        false,
+                    );
+                } else {
+                    window.paint_path(
+                        jelly_chained_ribbon(chained_shape),
+                        material.shell_mid.opacity(0.72 + pulse * 0.12),
+                    );
+                }
                 window.paint_path(
                     jelly_chained_ribbon_highlight(chained_shape),
                     material.specular.opacity(0.16 + pulse * 0.12),
@@ -169,8 +186,8 @@ fn jelly_lane_ribbon(
     )
 }
 
-fn lane_material(lane: &TaskLane, palette: &Palette) -> JellyMaterialToken {
-    let tone = match lane.phase {
+pub(crate) fn jelly_task_lane_tone(lane: &TaskLane) -> JellyTone {
+    match lane.phase {
         TaskLanePhase::Pending => JellyTone::Neutral,
         TaskLanePhase::Discovering | TaskLanePhase::Cancelling => JellyTone::Warning,
         TaskLanePhase::Running => match lane.kind.event_kind() {
@@ -179,7 +196,11 @@ fn lane_material(lane: &TaskLane, palette: &Palette) -> JellyMaterialToken {
         },
         TaskLanePhase::Completed => JellyTone::Success,
         TaskLanePhase::Failed => JellyTone::Error,
-    };
+    }
+}
+
+fn lane_material(lane: &TaskLane, palette: &Palette) -> JellyMaterialToken {
+    let tone = jelly_task_lane_tone(lane);
     JellyMaterialToken::for_tone(tone, palette)
 }
 

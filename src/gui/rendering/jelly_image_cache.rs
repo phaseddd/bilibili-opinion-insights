@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use gpui::RenderImage;
 
-use crate::gui::materials::JellyMaterialToken;
+use crate::gui::materials::{JellyMaterialToken, JellyTone};
 use crate::gui::motion::JellyProgressMotionSnapshot;
 use crate::gui::rendering::jelly_bitmap::{
     JellyRibbonBitmapConfig, rasterize_ribbon_material_bitmap,
@@ -39,6 +39,7 @@ struct JellyProgressImageKey {
     contact_bucket: u8,
     phase_bucket: u8,
     phase: JellyProgressImagePhase,
+    tone: JellyTone,
 }
 
 #[derive(Default)]
@@ -53,9 +54,10 @@ impl JellyImageCache {
         height: f32,
         motion: JellyProgressMotionSnapshot,
         phase: JellyProgressImagePhase,
+        tone: JellyTone,
         material: JellyMaterialToken,
     ) -> Option<JellyProgressImage> {
-        let key = JellyProgressImageKey::from_motion(width, height, motion, phase)?;
+        let key = JellyProgressImageKey::from_motion(width, height, motion, phase, tone)?;
         if let Some(image) = self.lookup(key) {
             return Some(JellyProgressImage { image });
         }
@@ -123,6 +125,7 @@ impl JellyProgressImageKey {
         height: f32,
         motion: JellyProgressMotionSnapshot,
         phase: JellyProgressImagePhase,
+        tone: JellyTone,
     ) -> Option<Self> {
         let width_px = quantize_dimension(width, 4., 48., 1800.)?;
         let height_px = quantize_dimension(height, 2., 18., 120.)?;
@@ -136,6 +139,7 @@ impl JellyProgressImageKey {
             contact_bucket: quantize_unit(motion.contact, 8) as u8,
             phase_bucket: quantize_unit(motion.gloss_phase, 15) as u8,
             phase,
+            tone,
         })
     }
 }
@@ -177,6 +181,7 @@ mod tests {
                 46.,
                 sample_motion(37.2),
                 JellyProgressImagePhase::Running,
+                JellyTone::Primary,
                 material,
             )
             .expect("render image");
@@ -186,6 +191,7 @@ mod tests {
                 46.4,
                 sample_motion(37.21),
                 JellyProgressImagePhase::Running,
+                JellyTone::Primary,
                 material,
             )
             .expect("render image");
@@ -204,6 +210,7 @@ mod tests {
             46.,
             sample_motion(21.),
             JellyProgressImagePhase::Running,
+            JellyTone::Primary,
             material,
         );
         cache.progress_image(
@@ -211,7 +218,33 @@ mod tests {
             46.,
             sample_motion(42.),
             JellyProgressImagePhase::Running,
+            JellyTone::Primary,
             material,
+        );
+
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn progress_image_cache_splits_material_tones() {
+        let mut cache = JellyImageCache::default();
+        let palette = Palette::default();
+
+        cache.progress_image(
+            640.,
+            46.,
+            sample_motion(37.),
+            JellyProgressImagePhase::Running,
+            JellyTone::Primary,
+            JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
+        );
+        cache.progress_image(
+            640.,
+            46.,
+            sample_motion(37.),
+            JellyProgressImagePhase::Running,
+            JellyTone::Cyan,
+            JellyMaterialToken::for_tone(JellyTone::Cyan, &palette),
         );
 
         assert_eq!(cache.len(), 2);

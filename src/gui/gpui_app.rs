@@ -31,7 +31,7 @@ use crate::gui::components::jelly_progress::jelly_progress as jelly_progress_com
 use crate::gui::components::jelly_switch::{
     JellySwitchConfig, JellySwitchSize, JellySwitchTone, jelly_switch,
 };
-use crate::gui::components::jelly_task_lane::jelly_task_lane;
+use crate::gui::components::jelly_task_lane::{jelly_task_lane, jelly_task_lane_tone};
 use crate::gui::messages::{AuthMessage, GuiMessage};
 use crate::gui::motion::wave_between;
 use crate::gui::rendering::jelly_image_cache::JellyProgressImagePhase;
@@ -40,7 +40,7 @@ use crate::gui::state::auth::{
 };
 use crate::gui::state::events::{EVENT_LIMIT, EventKind, EventLine, EventState};
 use crate::gui::state::results::{ResultItem, ResultState, format_collection_job};
-use crate::gui::state::task::{RunSummary, TaskPhase, TaskState};
+use crate::gui::state::task::{RunSummary, TaskLanePhase, TaskPhase, TaskState};
 use crate::gui::state::visual::{ButtonMotionId, VisualState};
 use crate::gui::theme::Palette;
 use crate::gui::views::auth_gate::{
@@ -1400,15 +1400,14 @@ impl BiliOpinionGui {
             .task
             .progress
             .motion_snapshot(self.task.phase, self.visual.motion_tick);
+        let progress_tone = progress_tone(self.task.phase);
         let progress_bitmap = self.visual.image_cache.progress_image(
             920.,
             46.,
             progress_motion,
             progress_image_phase(self.task.phase),
-            crate::gui::materials::JellyMaterialToken::for_tone(
-                progress_tone(self.task.phase),
-                palette,
-            ),
+            progress_tone,
+            crate::gui::materials::JellyMaterialToken::for_tone(progress_tone, palette),
         );
 
         panel(palette)
@@ -1472,13 +1471,23 @@ impl BiliOpinionGui {
             .child(self.render_run_summary(palette))
     }
 
-    fn render_task_lanes(&self, palette: &Palette) -> impl IntoElement {
-        v_flex().gap(px(8.)).children(
-            self.task
-                .lanes
-                .iter()
-                .map(|lane| jelly_task_lane(lane, self.visual.motion_tick, palette)),
-        )
+    fn render_task_lanes(&mut self, palette: &Palette) -> impl IntoElement {
+        v_flex()
+            .gap(px(8.))
+            .children(self.task.lanes.iter().map(|lane| {
+                let motion = lane.motion_snapshot(self.visual.motion_tick);
+                let tone = jelly_task_lane_tone(lane);
+                let bitmap = self.visual.image_cache.progress_image(
+                    360.,
+                    26.,
+                    motion,
+                    lane_image_phase(lane.phase),
+                    tone,
+                    crate::gui::materials::JellyMaterialToken::for_tone(tone, palette),
+                );
+
+                jelly_task_lane(lane, self.visual.motion_tick, palette, bitmap)
+            }))
     }
 
     fn render_run_summary(&self, palette: &Palette) -> impl IntoElement {
@@ -1680,6 +1689,17 @@ fn progress_image_phase(phase: TaskPhase) -> JellyProgressImagePhase {
         TaskPhase::Cancelling => JellyProgressImagePhase::Cancelling,
         TaskPhase::Completed => JellyProgressImagePhase::Completed,
         TaskPhase::Failed => JellyProgressImagePhase::Failed,
+    }
+}
+
+fn lane_image_phase(phase: TaskLanePhase) -> JellyProgressImagePhase {
+    match phase {
+        TaskLanePhase::Pending => JellyProgressImagePhase::Idle,
+        TaskLanePhase::Discovering => JellyProgressImagePhase::Validating,
+        TaskLanePhase::Running => JellyProgressImagePhase::Running,
+        TaskLanePhase::Cancelling => JellyProgressImagePhase::Cancelling,
+        TaskLanePhase::Completed => JellyProgressImagePhase::Completed,
+        TaskLanePhase::Failed => JellyProgressImagePhase::Failed,
     }
 }
 

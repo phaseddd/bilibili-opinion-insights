@@ -3,7 +3,7 @@ use gpui::{Hsla, hsla, rgb};
 use crate::gui::state::events::EventKind;
 use crate::gui::theme::Palette;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum JellyTone {
     Primary,
     Cyan,
