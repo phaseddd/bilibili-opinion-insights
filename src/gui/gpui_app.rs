@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -351,6 +351,12 @@ struct ProgressState {
     danmaku_appended: usize,
     danmaku_segments: usize,
     pulses: u64,
+    comment_expected_by_bvid: HashMap<String, u64>,
+    comment_scanned_by_bvid: HashMap<String, u64>,
+    comment_finished_bvids: HashSet<String>,
+    danmaku_segments_by_bvid: HashMap<String, u64>,
+    danmaku_scanned_segments_by_bvid: HashMap<String, u64>,
+    danmaku_finished_bvids: HashSet<String>,
 }
 
 struct RunSummary {
@@ -962,16 +968,50 @@ impl BiliOpinionGui {
 
     fn apply_collection_event(&mut self, event: CollectionEvent) {
         match &event {
+            CollectionEvent::CommentScanPlanned {
+                bvid,
+                expected_total,
+            } => {
+                self.task
+                    .progress
+                    .comment_expected_by_bvid
+                    .insert(bvid.clone(), *expected_total);
+                self.recalculate_progress_from_facts();
+            }
             CollectionEvent::CommentBatchWritten {
+                bvid,
                 records_scanned,
                 records_appended,
-                ..
             } => {
                 self.task.progress.comments_scanned += records_scanned;
                 self.task.progress.comments_appended += records_appended;
-                self.bump_progress_for_live_event();
+                *self
+                    .task
+                    .progress
+                    .comment_scanned_by_bvid
+                    .entry(bvid.clone())
+                    .or_default() += *records_scanned as u64;
+                self.recalculate_progress_from_facts();
+            }
+            CollectionEvent::CommentScanFinished { bvid } => {
+                self.task
+                    .progress
+                    .comment_finished_bvids
+                    .insert(bvid.clone());
+                self.recalculate_progress_from_facts();
+            }
+            CollectionEvent::DanmakuScanPlanned {
+                bvid,
+                total_segments,
+            } => {
+                self.task
+                    .progress
+                    .danmaku_segments_by_bvid
+                    .insert(bvid.clone(), *total_segments);
+                self.recalculate_progress_from_facts();
             }
             CollectionEvent::DanmakuSegmentWritten {
+                bvid,
                 records_scanned,
                 records_appended,
                 ..
@@ -979,7 +1019,20 @@ impl BiliOpinionGui {
                 self.task.progress.danmaku_scanned += records_scanned;
                 self.task.progress.danmaku_appended += records_appended;
                 self.task.progress.danmaku_segments += 1;
-                self.bump_progress_for_live_event();
+                *self
+                    .task
+                    .progress
+                    .danmaku_scanned_segments_by_bvid
+                    .entry(bvid.clone())
+                    .or_default() += 1;
+                self.recalculate_progress_from_facts();
+            }
+            CollectionEvent::DanmakuScanFinished { bvid } => {
+                self.task
+                    .progress
+                    .danmaku_finished_bvids
+                    .insert(bvid.clone());
+                self.recalculate_progress_from_facts();
             }
             _ => {}
         }
@@ -987,24 +1040,83 @@ impl BiliOpinionGui {
             .push_line(event_line_from_collection_event(&event));
     }
 
-    fn bump_progress_for_live_event(&mut self) {
+    fn recalculate_progress_from_facts(&mut self) {
         self.task.progress.pulses = self.task.progress.pulses.wrapping_add(1);
-        if self.task.progress.total_units == 0 {
-            self.task.progress.target_percent = (self.task.progress.target_percent + 1.).min(92.);
-            self.task.progress.display_percent = ease_towards(
-                self.task.progress.display_percent,
-                self.task.progress.target_percent,
-            );
+
+        let Some(summary) = self.task.active_summary.as_ref() else {
+            return;
+        };
+
+        let mut job_count = 0usize;
+        let mut completed_count = 0usize;
+        let mut progress_sum = 0.;
+
+        for bvid in &summary.videos {
+            if summary.collect_comments {
+                job_count += 1;
+                if self.task.progress.comment_finished_bvids.contains(bvid) {
+                    completed_count += 1;
+                    progress_sum += 1.;
+                } else {
+                    let scanned = self
+                        .task
+                        .progress
+                        .comment_scanned_by_bvid
+                        .get(bvid)
+                        .copied()
+                        .unwrap_or_default();
+                    let expected = self
+                        .task
+                        .progress
+                        .comment_expected_by_bvid
+                        .get(bvid)
+                        .copied();
+                    progress_sum += progress_fraction(scanned, expected);
+                }
+            }
+
+            if summary.collect_danmaku {
+                job_count += 1;
+                if self.task.progress.danmaku_finished_bvids.contains(bvid) {
+                    completed_count += 1;
+                    progress_sum += 1.;
+                } else {
+                    let scanned = self
+                        .task
+                        .progress
+                        .danmaku_scanned_segments_by_bvid
+                        .get(bvid)
+                        .copied()
+                        .unwrap_or_default();
+                    let expected = self
+                        .task
+                        .progress
+                        .danmaku_segments_by_bvid
+                        .get(bvid)
+                        .copied();
+                    progress_sum += progress_fraction(scanned, expected);
+                }
+            }
+        }
+
+        if job_count == 0 {
             return;
         }
 
-        let completed_floor =
-            self.task.progress.completed_units as f32 / self.task.progress.total_units as f32;
-        let current_unit_ceiling = ((self.task.progress.completed_units + 1) as f32
-            / self.task.progress.total_units as f32)
-            .min(0.96);
-        let nudge = 0.035;
-        let target = (completed_floor + nudge).min(current_unit_ceiling) * 100.;
+        self.task.progress.total_units = job_count;
+        self.task.progress.completed_units = self
+            .task
+            .progress
+            .completed_units
+            .max(completed_count)
+            .min(job_count);
+
+        let live_ceiling = if self.task.phase == TaskPhase::Running {
+            99.
+        } else {
+            100.
+        };
+        let target = (progress_sum / job_count as f32 * 100.).min(live_ceiling);
         self.task.progress.target_percent = self.task.progress.target_percent.max(target);
         self.task.progress.display_percent = ease_towards(
             self.task.progress.display_percent,
@@ -1013,7 +1125,12 @@ impl BiliOpinionGui {
     }
 
     fn finish_progress_unit(&mut self) {
-        self.task.progress.completed_units = self.task.progress.completed_units.saturating_add(1);
+        self.task.progress.completed_units = self
+            .task
+            .progress
+            .completed_units
+            .saturating_add(1)
+            .min(self.task.progress.total_units);
         if self.task.progress.total_units > 0 {
             self.task.progress.target_percent = (self.task.progress.completed_units as f32
                 / self.task.progress.total_units as f32
@@ -1613,6 +1730,13 @@ fn event_line_from_collection_event(event: &CollectionEvent) -> EventLine {
             kind: EventKind::Output,
             text: format!("{bvid} 输出已就绪：{}", path.display()),
         },
+        CollectionEvent::CommentScanPlanned {
+            bvid,
+            expected_total,
+        } => EventLine {
+            kind: EventKind::Comments,
+            text: format!("{bvid} 评论分母：预计 {expected_total} 条"),
+        },
         CollectionEvent::CommentBatchWritten {
             bvid,
             records_scanned,
@@ -1620,6 +1744,17 @@ fn event_line_from_collection_event(event: &CollectionEvent) -> EventLine {
         } => EventLine {
             kind: EventKind::Comments,
             text: format!("{bvid} 评论批次：扫描 {records_scanned}，新增 {records_appended}"),
+        },
+        CollectionEvent::CommentScanFinished { bvid } => EventLine {
+            kind: EventKind::Success,
+            text: format!("{bvid} 评论扫描完成"),
+        },
+        CollectionEvent::DanmakuScanPlanned {
+            bvid,
+            total_segments,
+        } => EventLine {
+            kind: EventKind::Danmaku,
+            text: format!("{bvid} 弹幕分母：预计 {total_segments} 个分段"),
         },
         CollectionEvent::DanmakuSegmentWritten {
             bvid,
@@ -1635,6 +1770,10 @@ fn event_line_from_collection_event(event: &CollectionEvent) -> EventLine {
                 "{bvid} 弹幕分段：cid={cid}，P{page}，段 {segment_index}，扫描 {records_scanned}，新增 {records_appended}，元数据新增 {}",
                 yes_no(*segment_appended)
             ),
+        },
+        CollectionEvent::DanmakuScanFinished { bvid } => EventLine {
+            kind: EventKind::Success,
+            text: format!("{bvid} 弹幕扫描完成"),
         },
         CollectionEvent::VideoFinished { bvid } => EventLine {
             kind: EventKind::Success,
@@ -3334,6 +3473,27 @@ fn ease_towards(current: f32, target: f32) -> f32 {
     }
 }
 
+fn progress_fraction(scanned: u64, expected: Option<u64>) -> f32 {
+    match expected {
+        Some(0) => {
+            if scanned == 0 {
+                0.
+            } else {
+                0.95
+            }
+        }
+        // The opening count is only a baseline. New comments may arrive while scanning.
+        Some(expected) => (scanned as f32 / expected as f32).clamp(0., 0.995),
+        None => {
+            if scanned == 0 {
+                0.
+            } else {
+                0.05
+            }
+        }
+    }
+}
+
 fn trimmed_input(input: &Entity<InputState>, cx: &App) -> Option<String> {
     let value = input.read(cx).value().trim().to_string();
     if value.is_empty() { None } else { Some(value) }
@@ -3393,5 +3553,25 @@ fn credential_source_label(source: CredentialSource) -> &'static str {
         CredentialSource::ExplicitCookie => "显式 cookie",
         CredentialSource::QrLogin => "二维码登录",
         CredentialSource::Anonymous => "匿名",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::progress_fraction;
+
+    #[test]
+    fn progress_fraction_caps_when_scan_exceeds_opening_count() {
+        let fraction = progress_fraction(10_050, Some(10_000));
+
+        assert!(fraction < 1.);
+        assert_eq!(fraction, 0.995);
+    }
+
+    #[test]
+    fn progress_fraction_uses_opening_count_before_finish() {
+        let fraction = progress_fraction(5_000, Some(10_000));
+
+        assert_eq!(fraction, 0.5);
     }
 }

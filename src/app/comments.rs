@@ -78,6 +78,10 @@ where
             video.comment_count
         }
     };
+    on_event(CollectionEvent::CommentScanPlanned {
+        bvid: video.bvid.clone(),
+        expected_total,
+    })?;
     let mut writer = CommentOutputWriter::create(&options.output, &video.bvid, &options.formats)?;
     for path in writer.paths() {
         tracing::info!(path = %path.display(), "initialized comment output");
@@ -112,6 +116,9 @@ where
         .map(|output| output.appended_count)
         .max()
         .unwrap_or(0);
+    on_event(CollectionEvent::CommentScanFinished {
+        bvid: video.bvid.clone(),
+    })?;
     on_event(CollectionEvent::VideoFinished {
         bvid: video.bvid.clone(),
     })?;

@@ -71,6 +71,20 @@ where
     let mut records_appended = 0;
     let mut segments_scanned = 0;
     let mut segments_appended = 0;
+    let total_segments = video
+        .pages
+        .iter()
+        .map(|page| {
+            let segments = segment_count(page.duration);
+            options
+                .max_segments
+                .map_or(segments, |limit| segments.min(limit))
+        })
+        .sum();
+    on_event(CollectionEvent::DanmakuScanPlanned {
+        bvid: video.bvid.clone(),
+        total_segments,
+    })?;
 
     for page in &video.pages {
         let mut segments = segment_count(page.duration);
@@ -112,6 +126,9 @@ where
     }
 
     let output = writer.finish()?;
+    on_event(CollectionEvent::DanmakuScanFinished {
+        bvid: video.bvid.clone(),
+    })?;
     on_event(CollectionEvent::VideoFinished {
         bvid: video.bvid.clone(),
     })?;

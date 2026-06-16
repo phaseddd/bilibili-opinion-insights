@@ -9,10 +9,21 @@ pub enum CollectionEvent {
         bvid: String,
         path: PathBuf,
     },
+    CommentScanPlanned {
+        bvid: String,
+        expected_total: u64,
+    },
     CommentBatchWritten {
         bvid: String,
         records_scanned: usize,
         records_appended: usize,
+    },
+    CommentScanFinished {
+        bvid: String,
+    },
+    DanmakuScanPlanned {
+        bvid: String,
+        total_segments: u64,
     },
     DanmakuSegmentWritten {
         bvid: String,
@@ -22,6 +33,9 @@ pub enum CollectionEvent {
         records_scanned: usize,
         records_appended: usize,
         segment_appended: bool,
+    },
+    DanmakuScanFinished {
+        bvid: String,
     },
     VideoFinished {
         bvid: String,
