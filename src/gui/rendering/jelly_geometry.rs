@@ -6,6 +6,7 @@ const RIBBON_POINTS: usize = 9;
 type RibbonPoint = (f32, f32);
 type RibbonPoints = [RibbonPoint; RIBBON_POINTS];
 type RibbonEdges = (RibbonPoints, RibbonPoints);
+const RIBBON_EPSILON: f32 = 0.0001;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct JellyPathShape {
@@ -39,6 +40,29 @@ pub(crate) struct JellyRibbonShape {
 pub(crate) struct JellyRibbonChainShape {
     pub(crate) shape: JellyRibbonShape,
     pub(crate) chain: JellyProgressChainSnapshot,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct JellyRibbonProfilePoint {
+    pub(crate) center: RibbonPoint,
+    pub(crate) normal: RibbonPoint,
+    pub(crate) half_thickness: f32,
+    pub(crate) progress_t: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct JellyRibbonProfile {
+    pub(crate) points: [JellyRibbonProfilePoint; RIBBON_POINTS],
+}
+
+// Reserved for the bitmap/GPU bridge; current GPUI path rendering only needs the profile edges.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct JellyRibbonSdfSample {
+    pub(crate) signed_distance: f32,
+    pub(crate) progress: f32,
+    pub(crate) normal: RibbonPoint,
+    pub(crate) inside: bool,
 }
 
 pub(crate) fn jelly_round_rect(shape: JellyPathShape) -> Path<Pixels> {
@@ -78,13 +102,85 @@ pub(crate) fn jelly_round_rect(shape: JellyPathShape) -> Path<Pixels> {
         .unwrap_or_else(|_| Path::new(point(px(0.), px(0.))))
 }
 
+pub(crate) fn jelly_ribbon_profile(shape: JellyRibbonChainShape) -> JellyRibbonProfile {
+    ribbon_profile_with_offsets(shape.shape, 0., 1., shape.chain.offsets)
+}
+
+#[allow(dead_code)]
+pub(crate) fn sample_ribbon_sdf(
+    profile: &JellyRibbonProfile,
+    x: f32,
+    y: f32,
+) -> JellyRibbonSdfSample {
+    let mut sample = JellyRibbonSdfSample {
+        signed_distance: f32::INFINITY,
+        progress: 0.,
+        normal: (0., 1.),
+        inside: false,
+    };
+
+    for idx in 0..RIBBON_POINTS - 1 {
+        let start = profile.points[idx];
+        let end = profile.points[idx + 1];
+        let segment = (end.center.0 - start.center.0, end.center.1 - start.center.1);
+        let len_sq = segment.0 * segment.0 + segment.1 * segment.1;
+        let projection_t = if len_sq > RIBBON_EPSILON {
+            (((x - start.center.0) * segment.0 + (y - start.center.1) * segment.1) / len_sq)
+                .clamp(0., 1.)
+        } else {
+            0.
+        };
+        let center = (
+            lerp(start.center.0, end.center.0, projection_t),
+            lerp(start.center.1, end.center.1, projection_t),
+        );
+        let half_thickness = lerp(start.half_thickness, end.half_thickness, projection_t).max(0.);
+        let delta = (x - center.0, y - center.1);
+        let delta_len = (delta.0 * delta.0 + delta.1 * delta.1).sqrt();
+        let signed_distance = delta_len - half_thickness;
+
+        if signed_distance < sample.signed_distance {
+            let normal = if delta_len > RIBBON_EPSILON {
+                (delta.0 / delta_len, delta.1 / delta_len)
+            } else {
+                normalize((
+                    lerp(start.normal.0, end.normal.0, projection_t),
+                    lerp(start.normal.1, end.normal.1, projection_t),
+                ))
+            };
+            sample = JellyRibbonSdfSample {
+                signed_distance,
+                progress: lerp(start.progress_t, end.progress_t, projection_t).clamp(0., 1.),
+                normal,
+                inside: signed_distance <= 0.,
+            };
+        }
+    }
+
+    if sample.signed_distance.is_finite() {
+        sample
+    } else {
+        JellyRibbonSdfSample {
+            signed_distance: 0.,
+            progress: 0.,
+            normal: (0., 1.),
+            inside: true,
+        }
+    }
+}
+
 pub(crate) fn jelly_chained_ribbon(shape: JellyRibbonChainShape) -> Path<Pixels> {
-    let (top, bottom) = chained_ribbon_edges(shape, 0., 1.);
+    let (top, bottom) = profile_edges(jelly_ribbon_profile(shape));
     closed_ribbon(top, bottom, 0.06)
 }
 
 pub(crate) fn jelly_chained_ribbon_highlight(shape: JellyRibbonChainShape) -> Path<Pixels> {
-    let (top, _) = chained_ribbon_edges(shape, -shape.shape.height * 0.19, 0.28);
+    let (top, _) = profile_edges(ribbon_profile_with_offsets(
+        shape.shape,
+        -shape.shape.height * 0.19,
+        0.28,
+        shape.chain.offsets,
+    ));
     let mut bottom = top;
     for (idx, point) in bottom.iter_mut().enumerate() {
         let t = idx as f32 / (RIBBON_POINTS - 1) as f32;
@@ -96,27 +192,24 @@ pub(crate) fn jelly_chained_ribbon_highlight(shape: JellyRibbonChainShape) -> Pa
 }
 
 pub(crate) fn jelly_chained_ribbon_shadow(shape: JellyRibbonChainShape) -> Path<Pixels> {
-    let (mut top, mut bottom) = chained_ribbon_edges(shape, shape.shape.height * 0.2, 0.78);
+    let (mut top, mut bottom) = profile_edges(ribbon_profile_with_offsets(
+        shape.shape,
+        shape.shape.height * 0.2,
+        0.78,
+        shape.chain.offsets,
+    ));
     for point in top.iter_mut().chain(bottom.iter_mut()) {
         point.1 += shape.shape.height * 0.18;
     }
     closed_ribbon(top, bottom, 0.2)
 }
 
-fn chained_ribbon_edges(
-    shape: JellyRibbonChainShape,
-    y_offset: f32,
-    thickness_scale: f32,
-) -> RibbonEdges {
-    ribbon_edges_with_offsets(shape.shape, y_offset, thickness_scale, shape.chain.offsets)
-}
-
-fn ribbon_edges_with_offsets(
+fn ribbon_profile_with_offsets(
     shape: JellyRibbonShape,
     y_offset: f32,
     thickness_scale: f32,
     chain_offsets: [f32; RIBBON_POINTS],
-) -> RibbonEdges {
+) -> JellyRibbonProfile {
     let progress = shape.progress.clamp(0.02, 1.);
     let width = shape.width.max(32.);
     let height = shape.height.max(12.);
@@ -131,8 +224,8 @@ fn ribbon_edges_with_offsets(
     let wave_phase = shape.phase;
     let active_amp = height * (0.08 + pressure * 0.14 + rebound.abs() * 0.05);
     let end_bulge = height * (0.08 + rebound.max(0.) * 0.12 + compression * 0.06);
-    let mut top = [(0., 0.); RIBBON_POINTS];
-    let mut bottom = [(0., 0.); RIBBON_POINTS];
+    let mut centers = [(0., 0.); RIBBON_POINTS];
+    let mut half_thicknesses = [0.; RIBBON_POINTS];
 
     for idx in 0..RIBBON_POINTS {
         let t = idx as f32 / (RIBBON_POINTS - 1) as f32;
@@ -160,11 +253,70 @@ fn ribbon_edges_with_offsets(
         } else {
             0.
         };
-        top[idx] = (x + cap_push, y - half);
-        bottom[idx] = (x + cap_push, y + half);
+        centers[idx] = (x + cap_push, y);
+        half_thicknesses[idx] = half;
     }
 
+    let mut points = [JellyRibbonProfilePoint {
+        center: (0., 0.),
+        normal: (0., 1.),
+        half_thickness: 0.,
+        progress_t: 0.,
+    }; RIBBON_POINTS];
+    for idx in 0..RIBBON_POINTS {
+        let tangent = if idx == 0 {
+            (centers[1].0 - centers[0].0, centers[1].1 - centers[0].1)
+        } else if idx == RIBBON_POINTS - 1 {
+            (
+                centers[idx].0 - centers[idx - 1].0,
+                centers[idx].1 - centers[idx - 1].1,
+            )
+        } else {
+            (
+                centers[idx + 1].0 - centers[idx - 1].0,
+                centers[idx + 1].1 - centers[idx - 1].1,
+            )
+        };
+        let normal = normalize((-tangent.1, tangent.0));
+        points[idx] = JellyRibbonProfilePoint {
+            center: centers[idx],
+            normal,
+            half_thickness: half_thicknesses[idx],
+            progress_t: idx as f32 / (RIBBON_POINTS - 1) as f32,
+        };
+    }
+
+    JellyRibbonProfile { points }
+}
+
+fn profile_edges(profile: JellyRibbonProfile) -> RibbonEdges {
+    let mut top = [(0., 0.); RIBBON_POINTS];
+    let mut bottom = [(0., 0.); RIBBON_POINTS];
+    for idx in 0..RIBBON_POINTS {
+        let point = profile.points[idx];
+        top[idx] = (
+            point.center.0 - point.normal.0 * point.half_thickness,
+            point.center.1 - point.normal.1 * point.half_thickness,
+        );
+        bottom[idx] = (
+            point.center.0 + point.normal.0 * point.half_thickness,
+            point.center.1 + point.normal.1 * point.half_thickness,
+        );
+    }
     (top, bottom)
+}
+
+fn normalize(vector: RibbonPoint) -> RibbonPoint {
+    let len = (vector.0 * vector.0 + vector.1 * vector.1).sqrt();
+    if len > RIBBON_EPSILON {
+        (vector.0 / len, vector.1 / len)
+    } else {
+        (0., 1.)
+    }
+}
+
+fn lerp(start: f32, end: f32, t: f32) -> f32 {
+    start + (end - start) * t
 }
 
 fn closed_ribbon(top: RibbonPoints, bottom: RibbonPoints, tolerance: f32) -> Path<Pixels> {
@@ -244,8 +396,9 @@ mod tests {
     use crate::gui::motion::JellyProgressChainSnapshot;
 
     use super::{
-        JellyRibbonChainShape, JellyRibbonShape, jelly_chained_ribbon,
-        jelly_chained_ribbon_highlight, jelly_chained_ribbon_shadow,
+        JellyRibbonChainShape, JellyRibbonShape, RIBBON_POINTS, jelly_chained_ribbon,
+        jelly_chained_ribbon_highlight, jelly_chained_ribbon_shadow, jelly_ribbon_profile,
+        sample_ribbon_sdf,
     };
 
     #[test]
@@ -292,5 +445,111 @@ mod tests {
         let _ = jelly_chained_ribbon(shape);
         let _ = jelly_chained_ribbon_highlight(shape);
         let _ = jelly_chained_ribbon_shadow(shape);
+    }
+
+    #[test]
+    fn ribbon_profile_points_remain_finite() {
+        let shape = sample_shape();
+        let profile = jelly_ribbon_profile(shape);
+
+        for point in profile.points {
+            assert!(point.center.0.is_finite());
+            assert!(point.center.1.is_finite());
+            assert!(point.normal.0.is_finite());
+            assert!(point.normal.1.is_finite());
+            assert!(point.half_thickness.is_finite());
+            assert!(point.half_thickness > 0.);
+            assert!((0.0..=1.0).contains(&point.progress_t));
+        }
+    }
+
+    #[test]
+    fn ribbon_profile_progress_is_monotonic() {
+        let profile = jelly_ribbon_profile(sample_shape());
+
+        for pair in profile.points.windows(2) {
+            assert!(pair[0].progress_t <= pair[1].progress_t);
+        }
+    }
+
+    #[test]
+    fn ribbon_sdf_marks_centerline_inside() {
+        let profile = jelly_ribbon_profile(sample_shape());
+        let center = profile.points[RIBBON_POINTS / 2].center;
+        let sample = sample_ribbon_sdf(&profile, center.0, center.1);
+
+        assert!(sample.inside);
+        assert!(sample.signed_distance <= 0.);
+        assert!(sample.signed_distance.is_finite());
+        assert!(sample.progress > 0.25);
+        assert!(sample.progress < 0.75);
+        assert!(sample.normal.0.is_finite());
+        assert!(sample.normal.1.is_finite());
+    }
+
+    #[test]
+    fn ribbon_sdf_marks_far_point_outside() {
+        let profile = jelly_ribbon_profile(sample_shape());
+        let sample = sample_ribbon_sdf(&profile, -300., -240.);
+
+        assert!(!sample.inside);
+        assert!(sample.signed_distance > 100.);
+        assert!(sample.normal.0.is_finite());
+        assert!(sample.normal.1.is_finite());
+    }
+
+    #[test]
+    fn ribbon_profile_remains_finite_at_low_progress() {
+        let shape = JellyRibbonChainShape {
+            shape: JellyRibbonShape {
+                origin_x: 10.,
+                origin_y: 10.,
+                width: 420.,
+                height: 42.,
+                progress: 0.001,
+                pressure: 1.,
+                rebound: -0.5,
+                compression: 1.,
+                phase: 8.1,
+            },
+            chain: JellyProgressChainSnapshot {
+                offsets: [0.31, -0.5, -0.2, 0.2, 0.35, 0.1, -0.4, -0.1, 0.],
+            },
+        };
+        let profile = jelly_ribbon_profile(shape);
+        let sample = sample_ribbon_sdf(
+            &profile,
+            profile.points[0].center.0,
+            profile.points[0].center.1,
+        );
+
+        for point in profile.points {
+            assert!(point.center.0.is_finite());
+            assert!(point.center.1.is_finite());
+            assert!(point.normal.0.is_finite());
+            assert!(point.normal.1.is_finite());
+            assert!(point.half_thickness.is_finite());
+            assert!(point.half_thickness > 0.);
+        }
+        assert!(sample.inside);
+    }
+
+    fn sample_shape() -> JellyRibbonChainShape {
+        JellyRibbonChainShape {
+            shape: JellyRibbonShape {
+                origin_x: 10.,
+                origin_y: 10.,
+                width: 420.,
+                height: 42.,
+                progress: 0.58,
+                pressure: 0.55,
+                rebound: 0.36,
+                compression: 0.7,
+                phase: 1.2,
+            },
+            chain: JellyProgressChainSnapshot {
+                offsets: [0., -0.04, -0.12, -0.16, -0.18, -0.12, -0.07, -0.03, 0.],
+            },
+        }
     }
 }
