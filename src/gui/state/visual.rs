@@ -1,4 +1,5 @@
 use crate::gui::motion::JellyMotionSnapshot;
+use crate::gui::rendering::jelly_image_cache::JellyImageCache;
 
 const CONTROL_IMPULSE_TICKS: u64 = 24;
 
@@ -6,6 +7,7 @@ const CONTROL_IMPULSE_TICKS: u64 = 24;
 pub(crate) struct VisualState {
     pub(crate) motion_tick: u64,
     pub(crate) motion_loop_running: bool,
+    pub(crate) image_cache: JellyImageCache,
     impulses: Vec<MotionImpulse>,
 }
 

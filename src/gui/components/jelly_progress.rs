@@ -1,4 +1,7 @@
-use gpui::{FontWeight, IntoElement, ParentElement, Styled as _, Window, canvas, div, px};
+use gpui::{
+    Bounds, Corners, FontWeight, IntoElement, ParentElement, Styled as _, Window, canvas, div,
+    point, px, size,
+};
 
 use crate::gui::materials::{JellyMaterialToken, JellyTone};
 use crate::gui::motion::{JellyMotionSnapshot, JellyProgressMotionSnapshot};
@@ -6,6 +9,7 @@ use crate::gui::rendering::jelly_geometry::{
     JellyPathShape, JellyRibbonChainShape, JellyRibbonShape, jelly_chained_ribbon,
     jelly_chained_ribbon_highlight, jelly_chained_ribbon_shadow, jelly_round_rect,
 };
+use crate::gui::rendering::jelly_image_cache::JellyProgressImage;
 use crate::gui::theme::Palette;
 
 #[derive(Clone, Copy)]
@@ -22,6 +26,7 @@ pub fn jelly_progress(
     motion: JellyProgressMotionSnapshot,
     phase: JellyProgressPhase,
     palette: &Palette,
+    bitmap: Option<JellyProgressImage>,
 ) -> impl IntoElement {
     let percent = motion.display_percent.clamp(0., 100.);
     let target_percent = motion.target_percent.clamp(0., 100.);
@@ -123,8 +128,25 @@ pub fn jelly_progress(
                                     .opacity(0.2 + motion_snapshot.contact * 0.09),
                             );
 
-                            let ribbon = jelly_chained_ribbon(chained_shape);
-                            window.paint_path(ribbon, token.shell_mid.opacity(0.76 + pulse * 0.14));
+                            if let Some(bitmap) = bitmap.clone() {
+                                let bitmap_bounds = Bounds::new(
+                                    point(px(origin_x + 3. + velocity_nudge), px(origin_y)),
+                                    size(px(track_w - 6.), px(track_h)),
+                                );
+                                let _ = window.paint_image(
+                                    bitmap_bounds,
+                                    Corners::from(px(track_h * 0.5)),
+                                    bitmap.image,
+                                    0,
+                                    false,
+                                );
+                            } else {
+                                let ribbon = jelly_chained_ribbon(chained_shape);
+                                window.paint_path(
+                                    ribbon,
+                                    token.shell_mid.opacity(0.76 + pulse * 0.14),
+                                );
+                            }
 
                             let ribbon_highlight = jelly_chained_ribbon_highlight(chained_shape);
                             window.paint_path(

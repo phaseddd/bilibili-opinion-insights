@@ -34,6 +34,7 @@ use crate::gui::components::jelly_switch::{
 use crate::gui::components::jelly_task_lane::jelly_task_lane;
 use crate::gui::messages::{AuthMessage, GuiMessage};
 use crate::gui::motion::wave_between;
+use crate::gui::rendering::jelly_image_cache::JellyProgressImagePhase;
 use crate::gui::state::auth::{
     AuthPhase, AuthState, CredentialSource, QrState, SessionKind, SessionMode,
 };
@@ -1394,7 +1395,22 @@ impl BiliOpinionGui {
             )
     }
 
-    fn render_progress_panel(&self, palette: &Palette) -> impl IntoElement {
+    fn render_progress_panel(&mut self, palette: &Palette) -> impl IntoElement {
+        let progress_motion = self
+            .task
+            .progress
+            .motion_snapshot(self.task.phase, self.visual.motion_tick);
+        let progress_bitmap = self.visual.image_cache.progress_image(
+            920.,
+            46.,
+            progress_motion,
+            progress_image_phase(self.task.phase),
+            crate::gui::materials::JellyMaterialToken::for_tone(
+                progress_tone(self.task.phase),
+                palette,
+            ),
+        );
+
         panel(palette)
             .gap(px(14.))
             .child(
@@ -1413,11 +1429,10 @@ impl BiliOpinionGui {
                     )),
             )
             .child(jelly_progress_component(
-                self.task
-                    .progress
-                    .motion_snapshot(self.task.phase, self.visual.motion_tick),
+                progress_motion,
                 progress_visual_phase(self.task.phase),
                 palette,
+                progress_bitmap,
             ))
             .when(!self.task.lanes.is_empty(), |this| {
                 this.child(self.render_task_lanes(palette))
@@ -1654,5 +1669,26 @@ fn auth_event_kind(session: &SessionMode) -> EventKind {
         SessionKind::LoggedIn => EventKind::Success,
         SessionKind::Anonymous => EventKind::Warning,
         SessionKind::Unknown => EventKind::Failure,
+    }
+}
+
+fn progress_image_phase(phase: TaskPhase) -> JellyProgressImagePhase {
+    match phase {
+        TaskPhase::Idle => JellyProgressImagePhase::Idle,
+        TaskPhase::Validating => JellyProgressImagePhase::Validating,
+        TaskPhase::Running => JellyProgressImagePhase::Running,
+        TaskPhase::Cancelling => JellyProgressImagePhase::Cancelling,
+        TaskPhase::Completed => JellyProgressImagePhase::Completed,
+        TaskPhase::Failed => JellyProgressImagePhase::Failed,
+    }
+}
+
+fn progress_tone(phase: TaskPhase) -> crate::gui::materials::JellyTone {
+    match phase {
+        TaskPhase::Idle => crate::gui::materials::JellyTone::Neutral,
+        TaskPhase::Validating | TaskPhase::Cancelling => crate::gui::materials::JellyTone::Warning,
+        TaskPhase::Running => crate::gui::materials::JellyTone::Primary,
+        TaskPhase::Completed => crate::gui::materials::JellyTone::Success,
+        TaskPhase::Failed => crate::gui::materials::JellyTone::Error,
     }
 }
