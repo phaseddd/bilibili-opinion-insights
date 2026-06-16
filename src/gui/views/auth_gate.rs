@@ -1,12 +1,14 @@
 use std::time::SystemTime;
 
 use gpui::{
-    FontWeight, IntoElement, ParentElement, SharedString, Styled as _, div, hsla,
-    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, relative, rgb,
+    Bounds, Corners, FontWeight, IntoElement, ParentElement, SharedString, Styled as _, Window,
+    canvas, div, hsla, linear_color_stop, linear_gradient, point, prelude::FluentBuilder as _, px,
+    relative, rgb, size,
 };
 use gpui_component::{h_flex, v_flex};
 
 use crate::gui::motion::{wave_01, wave_between};
+use crate::gui::rendering::jelly_image_cache::JellyCapsuleImage;
 use crate::gui::state::auth::{AuthPhase, AuthState, QrState, SessionKind, SessionMode};
 use crate::gui::state::events::EventKind;
 use crate::gui::theme::Palette;
@@ -239,44 +241,78 @@ fn auth_lifecycle_chip(
         )
 }
 
-pub(crate) fn session_capsule(auth: &AuthState, palette: &Palette) -> impl IntoElement {
+pub(crate) fn session_capsule(
+    auth: &AuthState,
+    palette: &Palette,
+    image: Option<JellyCapsuleImage>,
+) -> impl IntoElement {
     let kind = auth.status_kind();
     let color = event_color(kind, palette);
-    h_flex()
+    let mut capsule = h_flex()
+        .relative()
         .items_center()
         .gap(px(8.))
         .max_w(px(260.))
         .px(px(12.))
         .py(px(7.))
         .rounded(px(999.))
+        .overflow_hidden()
         .border_1()
         .border_color(color.opacity(0.22))
         .bg(linear_gradient(
             135.,
             linear_color_stop(color.opacity(0.09), 0.0),
             linear_color_stop(hsla(0., 0., 1., 0.7), 1.0),
-        ))
-        .child(status_dot(color))
-        .child(
-            v_flex()
-                .min_w(px(0.))
-                .gap(px(1.))
-                .child(
-                    div()
-                        .truncate()
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(color)
-                        .child(auth.phase.label()),
-                )
-                .child(
-                    div()
-                        .truncate()
-                        .text_size(px(10.))
-                        .text_color(palette.muted)
-                        .child(auth.session.title()),
-                ),
-        )
+        ));
+
+    if let Some(image) = image {
+        capsule = capsule.child(
+            canvas(
+                move |_, _window: &mut Window, _cx| (),
+                move |bounds, _, window: &mut Window, _cx| {
+                    let origin_x = f32::from(bounds.origin.x);
+                    let origin_y = f32::from(bounds.origin.y);
+                    let width = f32::from(bounds.size.width);
+                    let height = f32::from(bounds.size.height);
+                    let image_bounds = Bounds::new(
+                        point(px(origin_x), px(origin_y)),
+                        size(px(width), px(height)),
+                    );
+                    let _ = window.paint_image(
+                        image_bounds,
+                        Corners::from(px(height * 0.5)),
+                        image.image.clone(),
+                        0,
+                        false,
+                    );
+                },
+            )
+            .absolute()
+            .inset_0(),
+        );
+    }
+
+    capsule.child(status_dot(color)).child(
+        v_flex()
+            .relative()
+            .min_w(px(0.))
+            .gap(px(1.))
+            .child(
+                div()
+                    .truncate()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(color)
+                    .child(auth.phase.label()),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .text_size(px(10.))
+                    .text_color(palette.muted)
+                    .child(auth.session.title()),
+            ),
+    )
 }
 
 pub(crate) fn qr_stage(auth: &AuthState, palette: &Palette, motion_tick: u64) -> impl IntoElement {

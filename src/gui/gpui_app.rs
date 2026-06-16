@@ -36,8 +36,9 @@ use crate::gui::materials::{JellyMaterialToken, JellyTone};
 use crate::gui::messages::{AuthMessage, GuiMessage};
 use crate::gui::motion::{JellyMotionSnapshot, wave_between};
 use crate::gui::rendering::jelly_image_cache::{
-    JellyButtonImage, JellyButtonImageRequest, JellyProgressImagePhase, JellyProgressImageQuality,
-    JellyProgressImageRequest, JellySwitchImage, JellySwitchImageRequest,
+    JellyButtonImage, JellyButtonImageRequest, JellyCapsuleImage, JellyCapsuleImageRequest,
+    JellyProgressImagePhase, JellyProgressImageQuality, JellyProgressImageRequest,
+    JellySwitchImage, JellySwitchImageRequest,
 };
 use crate::gui::state::auth::{
     AuthPhase, AuthState, CredentialSource, QrState, SessionKind, SessionMode,
@@ -53,7 +54,7 @@ use crate::gui::views::auth_gate::{
 };
 use crate::gui::views::primitives::{
     form_section, metric_chip, option_group, panel, panel_title, phase_kind, product_mark,
-    progress_visual_phase, status_badge, status_dot, validation_box,
+    progress_visual_phase, status_capsule, status_dot, validation_box,
 };
 use crate::gui::views::workbench_widgets::{
     empty_result_state, event_row, failure_row, result_row,
@@ -362,6 +363,52 @@ impl BiliOpinionGui {
                 enabled: request.enabled,
                 active: request.active,
             })
+    }
+
+    fn capsule_image(
+        &mut self,
+        palette: &Palette,
+        kind: EventKind,
+        width: f32,
+        active: bool,
+    ) -> Option<JellyCapsuleImage> {
+        let tone = event_tone(kind);
+        let motion = self.capsule_motion(active);
+
+        self.visual
+            .image_cache
+            .capsule_image(JellyCapsuleImageRequest {
+                width,
+                height: 34.,
+                motion,
+                tone,
+                material: JellyMaterialToken::for_tone(tone, palette),
+                enabled: true,
+                active,
+            })
+    }
+
+    fn capsule_motion(&self, active: bool) -> JellyMotionSnapshot {
+        let breath = if active {
+            wave_between(self.visual.motion_tick, 0.18, 0.08, 0.32)
+        } else {
+            0.
+        };
+
+        JellyMotionSnapshot {
+            pressure: breath * 0.36,
+            rebound: breath * 0.14,
+            squash_x: breath * 0.18,
+            squash_y: breath * 0.12,
+            rim_pressure: 0.18 + breath * 0.46,
+            gloss_phase: (self.visual.motion_tick as f32 * 0.13)
+                .sin()
+                .mul_add(0.5, 0.5),
+            inner_lag: breath * 0.12,
+            contact: 0.18 + breath * 0.34,
+            aura: 0.2 + breath * 0.42,
+            error_shake: 0.,
+        }
     }
 
     fn build_draft(&self, cx: &App) -> Result<CollectionDraft, String> {
@@ -864,6 +911,9 @@ impl BiliOpinionGui {
             JellyButtonSize::Standard,
             anonymous_motion,
         );
+        let auth_capsule_kind = self.auth.status_kind();
+        let auth_capsule_image =
+            self.capsule_image(palette, auth_capsule_kind, 156., self.auth.is_busy());
 
         div()
             .size_full()
@@ -942,10 +992,11 @@ impl BiliOpinionGui {
                                                     ),
                                             ),
                                     )
-                                    .child(status_badge(
+                                    .child(status_capsule(
                                         self.auth.phase.label(),
-                                        self.auth.status_kind(),
+                                        auth_capsule_kind,
                                         palette,
+                                        auth_capsule_image,
                                     )),
                             ),
                     )
@@ -1208,6 +1259,12 @@ impl BiliOpinionGui {
             JellyButtonSize::Compact,
             start_motion,
         );
+        let session_capsule_image = self.capsule_image(
+            palette,
+            self.auth.status_kind(),
+            260.,
+            self.auth.is_busy() || self.task.phase.is_busy(),
+        );
 
         h_flex()
             .w_full()
@@ -1246,7 +1303,7 @@ impl BiliOpinionGui {
                 h_flex()
                     .flex_shrink_0()
                     .gap(px(8.))
-                    .child(session_capsule(&self.auth, palette))
+                    .child(session_capsule(&self.auth, palette, session_capsule_image))
                     .child(
                         header_action_button(
                             "清空",
@@ -1515,13 +1572,15 @@ impl BiliOpinionGui {
             })
     }
 
-    fn render_auth_strip(&self, palette: &Palette) -> impl IntoElement {
+    fn render_auth_strip(&mut self, palette: &Palette) -> impl IntoElement {
         let message = self
             .auth
             .message
             .clone()
             .unwrap_or_else(|| "等待身份状态。".to_string());
         let risk = self.auth.session.completeness_warning;
+        let auth_kind = self.auth.status_kind();
+        let capsule_image = self.capsule_image(palette, auth_kind, 156., self.auth.is_busy());
 
         v_flex()
             .w_full()
@@ -1549,10 +1608,11 @@ impl BiliOpinionGui {
                                     .child("登录态"),
                             ),
                     )
-                    .child(status_badge(
+                    .child(status_capsule(
                         self.auth.phase.label(),
-                        self.auth.status_kind(),
+                        auth_kind,
                         palette,
+                        capsule_image,
                     )),
             )
             .child(
@@ -1592,6 +1652,9 @@ impl BiliOpinionGui {
                     palette,
                 ),
             });
+        let phase_kind = phase_kind(self.task.phase);
+        let status_capsule_image =
+            self.capsule_image(palette, phase_kind, 136., self.task.phase.is_busy());
 
         panel(palette)
             .gap(px(14.))
@@ -1604,10 +1667,11 @@ impl BiliOpinionGui {
                         "以真实 collector 事件推进",
                         palette,
                     ))
-                    .child(status_badge(
+                    .child(status_capsule(
                         self.task.phase.label(),
-                        phase_kind(self.task.phase),
+                        phase_kind,
                         palette,
+                        status_capsule_image,
                     )),
             )
             .child(jelly_progress_component(
@@ -1757,7 +1821,24 @@ impl BiliOpinionGui {
             )
     }
 
-    fn render_result_panel(&self, palette: &Palette) -> impl IntoElement {
+    fn render_result_panel(&mut self, palette: &Palette) -> impl IntoElement {
+        let result_label = if self.results.jobs.is_empty() {
+            "等待结果"
+        } else {
+            "可复核"
+        };
+        let result_kind = if self.results.failures.is_empty() {
+            EventKind::Output
+        } else {
+            EventKind::Failure
+        };
+        let result_capsule_image = self.capsule_image(
+            palette,
+            result_kind,
+            136.,
+            !self.results.failures.is_empty(),
+        );
+
         panel(palette)
             .gap(px(12.))
             .child(
@@ -1769,18 +1850,11 @@ impl BiliOpinionGui {
                         "采集后汇总输出文件与失败项",
                         palette,
                     ))
-                    .child(status_badge(
-                        if self.results.jobs.is_empty() {
-                            "等待结果"
-                        } else {
-                            "可复核"
-                        },
-                        if self.results.failures.is_empty() {
-                            EventKind::Output
-                        } else {
-                            EventKind::Failure
-                        },
+                    .child(status_capsule(
+                        result_label,
+                        result_kind,
                         palette,
+                        result_capsule_image,
                     )),
             )
             .child(
@@ -1916,5 +1990,17 @@ fn switch_tone(tone: JellySwitchTone) -> JellyTone {
         JellySwitchTone::Primary => JellyTone::Primary,
         JellySwitchTone::Cyan => JellyTone::Cyan,
         JellySwitchTone::Output => JellyTone::Output,
+    }
+}
+
+fn event_tone(kind: EventKind) -> JellyTone {
+    match kind {
+        EventKind::System => JellyTone::Neutral,
+        EventKind::Video | EventKind::Comments => JellyTone::Primary,
+        EventKind::Danmaku => JellyTone::Cyan,
+        EventKind::Output => JellyTone::Output,
+        EventKind::Warning => JellyTone::Warning,
+        EventKind::Success => JellyTone::Success,
+        EventKind::Failure => JellyTone::Error,
     }
 }
