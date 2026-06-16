@@ -1,6 +1,11 @@
 #![allow(dead_code)]
 
+use std::sync::Arc;
+
+use gpui::RenderImage;
 use gpui::Rgba;
+use image::{Frame, ImageBuffer, RgbaImage};
+use smallvec::SmallVec;
 
 use crate::gui::materials::JellyMaterialToken;
 use crate::gui::rendering::jelly_geometry::{
@@ -58,6 +63,16 @@ impl JellyRibbonBitmap {
             pixel.swap(0, 2);
         }
         bgra
+    }
+
+    pub(crate) fn to_gpui_render_image(&self) -> Option<Arc<RenderImage>> {
+        let width = u32::try_from(self.width).ok()?;
+        let height = u32::try_from(self.height).ok()?;
+        let bgra = self.to_bgra8_for_gpui();
+        let image: RgbaImage = ImageBuffer::from_raw(width, height, bgra)?;
+        let frame = Frame::new(image);
+
+        Some(Arc::new(RenderImage::new(SmallVec::from_const([frame]))))
     }
 }
 
@@ -352,6 +367,19 @@ mod tests {
         assert_eq!(bgra[offset + 1], rgba[offset + 1]);
         assert_eq!(bgra[offset + 2], rgba[offset]);
         assert_eq!(bgra[offset + 3], rgba[offset + 3]);
+    }
+
+    #[test]
+    fn material_bitmap_can_create_gpui_render_image() {
+        let bitmap = sample_bitmap();
+        let image = bitmap
+            .to_gpui_render_image()
+            .expect("bitmap dimensions should fit into a GPUI RenderImage");
+        let size = image.size(0);
+
+        assert_eq!(u32::from(size.width), bitmap.width as u32);
+        assert_eq!(u32::from(size.height), bitmap.height as u32);
+        assert_eq!(image.as_bytes(0).unwrap().len(), bitmap.rgba8().len());
     }
 
     fn sample_bitmap() -> super::JellyRibbonBitmap {
