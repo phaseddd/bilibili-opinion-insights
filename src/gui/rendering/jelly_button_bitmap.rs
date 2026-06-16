@@ -64,6 +64,7 @@ pub(crate) fn rasterize_button_material_bitmap(
     let pressure = request.motion.pressure.clamp(0., 1.);
     let rebound = request.motion.rebound.clamp(-1., 1.);
     let squash_x = request.motion.squash_x.clamp(0., 1.);
+    let squash_y = request.motion.squash_y.clamp(0., 1.);
     let contact = request.motion.contact.clamp(0., 1.);
     let aura = request.motion.aura.clamp(0., 1.);
     let loading = if request.loading {
@@ -76,17 +77,20 @@ pub(crate) fn rasterize_button_material_bitmap(
 
     let shell_left = request.width * 0.025 - squash_x * request.width * 0.018;
     let shell_right = request.width * 0.975 + squash_x * request.width * 0.018;
-    let shell_top = request.height * 0.08 + pressure * request.height * 0.06
+    let shell_top = request.height * 0.08
+        + pressure * request.height * 0.06
+        + squash_y * request.height * 0.026
         - rebound.max(0.) * request.height * 0.035;
-    let shell_bottom = request.height * 0.9 + pressure * request.height * 0.035;
+    let shell_bottom = request.height * 0.9 + pressure * request.height * 0.035
+        - squash_y * request.height * 0.032;
     let shell_radius = (shell_bottom - shell_top) * (0.5 + rebound.max(0.) * 0.035);
 
     let trough_inset_x = request.width * (0.235 + pressure * 0.02);
-    let trough_top = request.height * (0.31 + pressure * 0.035);
-    let trough_bottom = request.height * (0.71 + pressure * 0.025);
+    let trough_top = request.height * (0.31 + pressure * 0.035 + squash_y * 0.018);
+    let trough_bottom = request.height * (0.71 + pressure * 0.025 - squash_y * 0.022);
     let core_inset_x = request.width * (0.305 + pressure * 0.026);
-    let core_top = request.height * (0.405 + pressure * 0.038);
-    let core_bottom = request.height * (0.62 + pressure * 0.03);
+    let core_top = request.height * (0.405 + pressure * 0.038 + squash_y * 0.018);
+    let core_bottom = request.height * (0.62 + pressure * 0.03 - squash_y * 0.018);
 
     for row in 0..height {
         let y = (row as f32 + 0.5) * pixel_size;
@@ -424,6 +428,25 @@ mod tests {
     }
 
     #[test]
+    fn squash_y_button_bitmap_compresses_covered_height() {
+        let idle = sample_bitmap_with_motion(JellyMotionSnapshot {
+            rim_pressure: 0.2,
+            aura: 0.25,
+            ..JellyMotionSnapshot::default()
+        });
+        let squashed = sample_bitmap_with_motion(JellyMotionSnapshot {
+            squash_y: 0.9,
+            rim_pressure: 0.2,
+            aura: 0.25,
+            ..JellyMotionSnapshot::default()
+        });
+        let idle_height = covered_height(&idle, 160);
+        let squashed_height = covered_height(&squashed, 160);
+
+        assert!(squashed_height < idle_height);
+    }
+
+    #[test]
     fn button_bitmap_can_create_gpui_render_image() {
         let bitmap = sample_bitmap(false);
         let image = bitmap
@@ -436,23 +459,27 @@ mod tests {
     }
 
     fn sample_bitmap(pressed: bool) -> super::JellyButtonBitmap {
+        sample_bitmap_with_motion(JellyMotionSnapshot {
+            pressure: if pressed { 0.75 } else { 0. },
+            rebound: if pressed { 0.2 } else { 0. },
+            squash_x: if pressed { 0.45 } else { 0. },
+            squash_y: if pressed { 0.35 } else { 0. },
+            rim_pressure: if pressed { 0.5 } else { 0.2 },
+            gloss_phase: 0.36,
+            inner_lag: if pressed { 0.2 } else { 0. },
+            contact: if pressed { 0.7 } else { 0.2 },
+            aura: 0.25,
+            error_shake: 0.,
+        })
+    }
+
+    fn sample_bitmap_with_motion(motion: JellyMotionSnapshot) -> super::JellyButtonBitmap {
         rasterize_button_material_bitmap(JellyButtonBitmapRequest {
             width: 360.,
             height: 66.,
             pixel_size: 2.,
             material: JellyMaterialToken::for_tone(JellyTone::Primary, &Palette::default()),
-            motion: JellyMotionSnapshot {
-                pressure: if pressed { 0.75 } else { 0. },
-                rebound: if pressed { 0.2 } else { 0. },
-                squash_x: if pressed { 0.45 } else { 0. },
-                squash_y: if pressed { 0.35 } else { 0. },
-                rim_pressure: if pressed { 0.5 } else { 0.2 },
-                gloss_phase: 0.36,
-                inner_lag: if pressed { 0.2 } else { 0. },
-                contact: if pressed { 0.7 } else { 0.2 },
-                aura: 0.25,
-                error_shake: 0.,
-            },
+            motion,
             enabled: true,
             loading: false,
         })
@@ -499,5 +526,24 @@ mod tests {
 
         assert!(count > 0);
         total as f32 / count as f32
+    }
+
+    fn covered_height(bitmap: &super::JellyButtonBitmap, alpha_threshold: u8) -> usize {
+        let mut top = None;
+        let mut bottom = None;
+        for row in 0..bitmap.height {
+            let covered = (0..bitmap.width).any(|col| {
+                let offset = (row * bitmap.width + col) * BYTES_PER_PIXEL;
+                bitmap.rgba8()[offset + 3] > alpha_threshold
+            });
+            if covered {
+                top.get_or_insert(row);
+                bottom = Some(row);
+            }
+        }
+
+        let top = top.expect("bitmap should have covered pixels");
+        let bottom = bottom.expect("bitmap should have covered pixels");
+        bottom - top + 1
     }
 }
