@@ -135,28 +135,78 @@ pub(crate) fn status_badge(
     let color = event_color(kind, palette);
     let material = JellyMaterialToken::for_event(kind, palette);
     h_flex()
+        .relative()
         .flex_shrink_0()
         .items_center()
         .gap(px(6.))
-        .px(px(9.))
-        .py(px(5.))
+        .px(px(10.))
+        .py(px(6.))
         .rounded(px(999.))
+        .overflow_hidden()
         .border_1()
-        .border_color(material.rim.opacity(0.34))
+        .border_color(material.rim.opacity(0.42))
         .bg(linear_gradient(
             135.,
-            linear_color_stop(material.shell_start.opacity(0.13), 0.0),
-            linear_color_stop(material.shell_end.opacity(0.16), 1.0),
+            linear_color_stop(material.shell_start.opacity(0.16), 0.0),
+            linear_color_stop(material.shell_end.opacity(0.2), 1.0),
         ))
-        .shadow(vec![gpui::BoxShadow {
-            color: material.state_aura.opacity(0.10),
-            offset: gpui::point(px(0.), px(5.)),
-            blur_radius: px(12.),
-            spread_radius: px(-7.),
-        }])
-        .child(status_dot(color))
+        .shadow(vec![
+            gpui::BoxShadow {
+                color: material.state_aura.opacity(0.12),
+                offset: gpui::point(px(0.), px(6.)),
+                blur_radius: px(14.),
+                spread_radius: px(-8.),
+            },
+            gpui::BoxShadow {
+                color: material.inner_glow.opacity(0.18),
+                offset: gpui::point(px(0.), px(2.)),
+                blur_radius: px(10.),
+                spread_radius: px(-5.),
+            },
+        ])
         .child(
             div()
+                .absolute()
+                .left(px(3.))
+                .right(px(3.))
+                .bottom(px(1.))
+                .h(px(14.))
+                .rounded(px(999.))
+                .bg(material.contact_shadow.opacity(0.12)),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(9.))
+                .right(px(13.))
+                .top(px(3.))
+                .h(px(2.))
+                .rounded(px(999.))
+                .bg(material.specular.opacity(0.34)),
+        )
+        .child(
+            div()
+                .relative()
+                .flex_shrink_0()
+                .size(px(9.))
+                .rounded(px(999.))
+                .border_1()
+                .border_color(material.rim.opacity(0.34))
+                .bg(linear_gradient(
+                    135.,
+                    linear_color_stop(color.opacity(0.92), 0.0),
+                    linear_color_stop(material.specular.opacity(0.42), 1.0),
+                ))
+                .shadow(vec![gpui::BoxShadow {
+                    color: material.state_aura.opacity(0.26),
+                    offset: gpui::point(px(0.), px(2.)),
+                    blur_radius: px(6.),
+                    spread_radius: px(-2.),
+                }]),
+        )
+        .child(
+            div()
+                .relative()
                 .text_size(px(11.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(color)
