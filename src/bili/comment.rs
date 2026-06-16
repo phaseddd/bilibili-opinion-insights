@@ -62,7 +62,7 @@ struct SecondaryCommentScanConfig<'a> {
     request_delay: Option<Duration>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct CommentRecord {
     #[serde(rename = "Uname")]
     pub uname: String,

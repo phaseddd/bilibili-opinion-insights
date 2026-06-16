@@ -1,13 +1,15 @@
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::fs::{self, File};
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use serde::Serialize;
 
 use crate::app::events::CollectionEvent;
+use crate::app::jsonl::{
+    append_jsonl_writer, flush_jsonl_writer, read_jsonl_keys, write_jsonl_record,
+};
 use crate::bili::client::BiliClient;
 use crate::bili::danmaku::{
     DanmakuRecord, DanmakuSegment, DanmakuSegmentContext, DanmakuSegmentMetadata, segment_count,
@@ -230,23 +232,6 @@ impl DanmakuOutputWriter {
     }
 }
 
-fn append_jsonl_writer(path: &Path) -> Result<BufWriter<File>> {
-    let file = OpenOptions::new().create(true).append(true).open(path)?;
-    Ok(BufWriter::new(file))
-}
-
-fn write_jsonl_record<T: Serialize>(writer: &mut BufWriter<File>, record: &T) -> Result<()> {
-    serde_json::to_writer(&mut *writer, record)?;
-    writeln!(writer)?;
-    Ok(())
-}
-
-fn flush_jsonl_writer(writer: &mut BufWriter<File>) -> Result<()> {
-    writer.flush()?;
-    writer.get_mut().sync_data()?;
-    Ok(())
-}
-
 fn danmaku_record_key(record: &DanmakuRecord) -> String {
     if record.id_str.trim().is_empty() {
         record.id.to_string()
@@ -286,24 +271,7 @@ fn read_existing_jsonl_keys<F>(path: &Path, mut key_from_value: F) -> Result<Has
 where
     F: FnMut(&serde_json::Value) -> Option<String>,
 {
-    if !path.exists() {
-        return Ok(HashSet::new());
-    }
-
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut keys = HashSet::new();
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value: serde_json::Value = serde_json::from_str(&line)?;
-        if let Some(key) = key_from_value(&value) {
-            keys.insert(key);
-        }
-    }
-    Ok(keys)
+    read_jsonl_keys(path, |value| key_from_value(value))
 }
 
 #[cfg(test)]

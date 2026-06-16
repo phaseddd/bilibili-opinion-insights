@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 
 use crate::app::events::CollectionEvent;
+use crate::app::jsonl::{flush_jsonl_writer, read_jsonl_keys, write_jsonl_record};
 use crate::bili::client::BiliClient;
 use crate::bili::comment::{CommentRecord, CommentScanSummary};
 
@@ -307,8 +308,7 @@ impl CommentFormatWriter {
                 let mut batch_appended = 0;
                 for comment in comments {
                     if seen.insert(comment.rpid) {
-                        serde_json::to_writer(&mut *writer, comment)?;
-                        writeln!(writer)?;
+                        write_jsonl_record(writer, comment)?;
                         *appended_count += 1;
                         batch_appended += 1;
                     }
@@ -352,12 +352,6 @@ fn flush_csv_writer(writer: &mut csv::Writer<File>) -> Result<()> {
     Ok(())
 }
 
-fn flush_jsonl_writer(writer: &mut BufWriter<File>) -> Result<()> {
-    writer.flush()?;
-    writer.get_mut().sync_data()?;
-    Ok(())
-}
-
 fn validate_existing_csv_header(path: &Path) -> Result<()> {
     let mut reader = csv::Reader::from_path(path)?;
     let headers = reader.headers()?;
@@ -390,24 +384,9 @@ fn read_existing_csv_rpids(path: &Path) -> Result<HashSet<u64>> {
 }
 
 fn read_existing_jsonl_rpids(path: &Path) -> Result<HashSet<u64>> {
-    if !path.exists() {
-        return Ok(HashSet::new());
-    }
-
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut rpids = HashSet::new();
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value: serde_json::Value = serde_json::from_str(&line)?;
-        if let Some(rpid) = value.get("Rpid").and_then(serde_json::Value::as_u64) {
-            rpids.insert(rpid);
-        }
-    }
-    Ok(rpids)
+    read_jsonl_keys(path, |value| {
+        value.get("Rpid").and_then(serde_json::Value::as_u64)
+    })
 }
 
 #[cfg(test)]

@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use prost::Message;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::client::BiliClient;
 
 const DANMAKU_SEGMENT_URL: &str = "https://api.bilibili.com/x/v2/dm/web/seg.so";
 const SEGMENT_SECONDS: u64 = 360;
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct DanmakuRecord {
     pub bvid: String,
     pub aid: u64,
@@ -32,7 +32,7 @@ pub struct DanmakuRecord {
     pub colorful: i32,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct DanmakuSegmentMetadata {
     pub bvid: String,
     pub aid: u64,
@@ -46,13 +46,13 @@ pub struct DanmakuSegmentMetadata {
     pub colorful_sources: Vec<DanmakuColorfulSource>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct DanmakuAiFlagRecord {
     pub dmid: i64,
     pub flag: u32,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct DanmakuColorfulSource {
     pub colorful_type: i32,
     pub src: String,
