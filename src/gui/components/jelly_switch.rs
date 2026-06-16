@@ -58,7 +58,7 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
         5. + travel * progress + endpoint as f32 * (config.motion.squash_x * 4. + settle * 3.);
     let thumb_w = thumb + config.motion.squash_x * 9. + active_wave * 8.;
     let thumb_h = thumb - config.motion.squash_y * 6. - active_wave * 3.;
-    let fill_alpha = if config.checked { 0.88 } else { 0.18 };
+    let fill_alpha = if config.checked { 0.9 } else { 0.22 };
     let group_name = SharedString::from(config.group);
 
     div()
@@ -97,7 +97,7 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
                         spread_radius: px(-13.),
                     },
                     gpui::BoxShadow {
-                        color: hsla(0., 0., 1., 0.46 * opacity),
+                        color: material.inner_glow.opacity(0.32 * opacity),
                         offset: gpui::point(px(0.), px(1.)),
                         blur_radius: px(0.),
                         spread_radius: px(0.),
@@ -153,8 +153,8 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
                         )
                         .bg(linear_gradient(
                             145.,
-                            linear_color_stop(material.core_top.opacity(0.95 * opacity), 0.0),
-                            linear_color_stop(material.shell_end.opacity(0.42 * opacity), 1.0),
+                            linear_color_stop(material.shell_mid.opacity(0.78 * opacity), 0.0),
+                            linear_color_stop(material.shell_end.opacity(0.66 * opacity), 1.0),
                         ))
                         .shadow(vec![
                             gpui::BoxShadow {
@@ -166,7 +166,7 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
                                 spread_radius: px(-8.),
                             },
                             gpui::BoxShadow {
-                                color: hsla(0., 0., 1., 0.58 * opacity),
+                                color: material.inner_glow.opacity(0.36 * opacity),
                                 offset: gpui::point(px(0.), px(1.)),
                                 blur_radius: px(0.),
                                 spread_radius: px(0.),
@@ -180,10 +180,19 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
                         .child(top_specular_band(
                             material,
                             config.motion,
-                            8.,
-                            (thumb * 0.2).max(5.),
+                            12.,
+                            (thumb * 0.14).max(4.),
                             opacity,
                         ))
+                        .child(
+                            div()
+                                .absolute()
+                                .right(px(7.))
+                                .bottom(px(7.))
+                                .size(px((thumb * 0.28).max(8.)))
+                                .rounded(px(999.))
+                                .bg(material.specular.opacity(0.24 * opacity)),
+                        )
                         .child(lower_refractive_ridge(material, config.motion, opacity)),
                 ),
         )
