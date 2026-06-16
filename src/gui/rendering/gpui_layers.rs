@@ -10,14 +10,14 @@ pub(crate) fn shell_contact_shadow(
 ) -> Div {
     div()
         .absolute()
-        .left(px(7. - motion.squash_x * 7.))
-        .right(px(7. - motion.squash_x * 7.))
+        .left(px(4. - motion.squash_x * 9.))
+        .right(px(4. - motion.squash_x * 9.))
         .bottom(px(0.))
-        .h(px(12. + motion.contact * 5.))
+        .h(px(14. + motion.contact * 7.))
         .rounded(px(999.))
         .bg(material
             .contact_shadow
-            .opacity((0.16 + motion.contact * 0.22 + motion.aura * 0.08) * opacity))
+            .opacity((0.2 + motion.contact * 0.26 + motion.aura * 0.1) * opacity))
 }
 
 pub(crate) fn top_specular_band(
@@ -29,18 +29,20 @@ pub(crate) fn top_specular_band(
 ) -> Div {
     div()
         .absolute()
-        .left(px(inset - motion.squash_x * 4.))
-        .right(px(inset + motion.squash_x * 2.))
-        .top(px(4. + motion.pressure * 2.4 - motion.rebound.max(0.) * 1.6))
-        .h(px((height - motion.pressure * 1.7).max(3.)))
+        .left(px(inset - motion.squash_x * 5.))
+        .right(px(inset + motion.squash_x * 3.))
+        .top(px(
+            4.8 + motion.pressure * 2.8 - motion.rebound.max(0.) * 1.9
+        ))
+        .h(px((height - motion.pressure * 2.2).max(2.8)))
         .rounded(px(999.))
         .bg(linear_gradient(
             90.,
-            linear_color_stop(material.specular.opacity(0.18 * opacity), 0.0),
+            linear_color_stop(material.specular.opacity(0.12 * opacity), 0.0),
             linear_color_stop(
                 material
                     .specular
-                    .opacity((0.42 + motion.gloss_phase * 0.38) * opacity),
+                    .opacity((0.36 + motion.gloss_phase * 0.32) * opacity),
                 1.0,
             ),
         ))
@@ -53,18 +55,18 @@ pub(crate) fn lower_refractive_ridge(
 ) -> Div {
     div()
         .absolute()
-        .left(px(9. - motion.squash_x * 5.))
-        .right(px(9. - motion.squash_x * 4.))
-        .bottom(px(5. - motion.pressure * 1.7))
-        .h(px(9. + motion.rebound.max(0.) * 3.4))
+        .left(px(5. - motion.squash_x * 7.))
+        .right(px(5. - motion.squash_x * 6.))
+        .bottom(px(4. - motion.pressure * 2.))
+        .h(px(12. + motion.rebound.max(0.) * 4.2))
         .rounded(px(999.))
         .bg(linear_gradient(
             90.,
-            linear_color_stop(hsla(0., 0., 1., 0.07 * opacity), 0.0),
+            linear_color_stop(hsla(0., 0., 1., 0.08 * opacity), 0.0),
             linear_color_stop(
                 material
                     .specular
-                    .opacity((0.28 + motion.rim_pressure * 0.24) * opacity),
+                    .opacity((0.32 + motion.rim_pressure * 0.28) * opacity),
                 1.0,
             ),
         ))

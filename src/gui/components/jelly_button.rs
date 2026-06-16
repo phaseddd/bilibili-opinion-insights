@@ -75,8 +75,8 @@ impl JellyButtonSize {
                 min_width: 172.,
                 outer_pad_x: 24.,
                 text_size: 12.,
-                core_x: 70.,
-                core_y: 28.,
+                core_x: 82.,
+                core_y: 34.,
                 shell_top: 0.,
                 shell_bottom: 3.,
                 highlight_h: 7.5,
@@ -86,8 +86,8 @@ impl JellyButtonSize {
                 min_width: 108.,
                 outer_pad_x: 16.,
                 text_size: 11.,
-                core_x: 46.,
-                core_y: 21.,
+                core_x: 54.,
+                core_y: 25.,
                 shell_top: 0.,
                 shell_bottom: 2.,
                 highlight_h: 5.5,
@@ -172,32 +172,34 @@ fn button_shape(
     };
     let pressure = (motion.pressure + loading_breath).clamp(0., 1.);
     let rebound = motion.rebound;
-    let outward = shell_depth * 2.8 * size_factor
-        + motion.squash_x * (10. + shell_depth * 6.) * size_factor
-        + rebound.max(0.) * (7. + shell_depth * 3.8) * size_factor;
+    let outward = shell_depth * 4.4 * size_factor
+        + motion.squash_x * (15. + shell_depth * 8.) * size_factor
+        + rebound.max(0.) * (10. + shell_depth * 5.2) * size_factor;
     let press_down =
-        pressure * (5.2 + shell_depth * 1.2) * size_factor + motion.squash_y * 2.4 * size_factor;
-    let lift = rebound.max(0.) * (2.6 + shell_depth * 1.1) * size_factor;
+        pressure * (6.4 + shell_depth * 1.4) * size_factor + motion.squash_y * 3.2 * size_factor;
+    let lift = rebound.max(0.) * (3.4 + shell_depth * 1.3) * size_factor;
 
     JellyButtonShape {
         shell_top: metrics.shell_top + press_down - lift,
-        shell_bottom: metrics.shell_bottom - pressure * 2.1 * size_factor + lift * 0.4,
+        shell_bottom: metrics.shell_bottom - pressure * 2.8 * size_factor + lift * 0.52,
         shell_bleed_x: outward,
         shell_rounding: 999.,
         core_left: metrics.core_x
-            + shell_depth * 13.5
-            + motion.inner_lag * 5.6 * size_factor
-            + pressure * 5. * size_factor,
+            + shell_depth * 18.
+            + motion.inner_lag * 6.2 * size_factor
+            + pressure * 8. * size_factor,
         core_right: metrics.core_x
-            + shell_depth * 13.5
-            + motion.inner_lag * 4.2 * size_factor
-            + pressure * 4. * size_factor,
+            + shell_depth * 18.
+            + motion.inner_lag * 5.2 * size_factor
+            + pressure * 7. * size_factor,
         core_top: metrics.core_y
-            + shell_depth * 5.2
-            + press_down * 0.42
-            + motion.inner_lag * 2. * size_factor,
-        core_bottom: metrics.core_y + shell_depth * 4.2 - pressure * 0.4 * size_factor
-            + motion.inner_lag,
+            + shell_depth * 7.2
+            + press_down * 0.5
+            + motion.inner_lag * 2.6 * size_factor,
+        core_bottom: metrics.core_y
+            + shell_depth * 6.2
+            + pressure * 1.2 * size_factor
+            + motion.inner_lag * 1.2,
         core_rounding: 999.,
         label_y: press_down * 0.35 - lift * 0.22,
         contact_offset: 15. - pressure * 5. + rebound.max(0.) * 2.,
@@ -220,8 +222,8 @@ pub fn jelly_action_button(
     let group_name = SharedString::from(config.group);
     let id_seed = config.id_seed;
     let shell_alpha = material.shell_alpha * opacity;
-    let core_alpha = material.core_alpha * 0.68 * opacity;
-    let trough_alpha = (0.22 + motion.inner_lag * 0.14 + motion.pressure * 0.1) * opacity;
+    let core_alpha = material.core_alpha * 0.48 * opacity;
+    let trough_alpha = (0.3 + motion.inner_lag * 0.18 + motion.pressure * 0.14) * opacity;
 
     div()
         .relative()
@@ -263,10 +265,10 @@ pub fn jelly_action_button(
                         spread_radius: px(-14.),
                     },
                     gpui::BoxShadow {
-                        color: material.inner_glow.opacity(0.48 * opacity),
-                        offset: gpui::point(px(0.), px(8.)),
-                        blur_radius: px(28.),
-                        spread_radius: px(-8.),
+                        color: material.inner_glow.opacity(0.62 * opacity),
+                        offset: gpui::point(px(0.), px(7.)),
+                        blur_radius: px(34.),
+                        spread_radius: px(-7.),
                     },
                     gpui::BoxShadow {
                         color: material.rim.opacity(0.58 * opacity),
@@ -304,52 +306,52 @@ pub fn jelly_action_button(
                 .child(
                     div()
                         .absolute()
-                        .left(px(8. - motion.squash_x * 4.))
-                        .right(px(8. - motion.squash_x * 3.))
-                        .top(px(8. + motion.pressure * 1.2))
-                        .bottom(px(6. - motion.pressure * 0.8))
+                        .left(px(5. - motion.squash_x * 5.))
+                        .right(px(5. - motion.squash_x * 4.))
+                        .top(px(5. + motion.pressure * 1.4))
+                        .bottom(px(3. - motion.pressure * 0.9))
                         .rounded(px(999.))
                         .bg(material
                             .shell_mid
-                            .opacity((0.34 + motion.gloss_phase * 0.1) * opacity)),
+                            .opacity((0.46 + motion.gloss_phase * 0.12) * opacity)),
                 )
                 .child(
                     div()
                         .absolute()
-                        .left(px(4. - motion.squash_x * 4.))
-                        .right(px(4. - motion.squash_x * 3.))
+                        .left(px(2. - motion.squash_x * 5.))
+                        .right(px(2. - motion.squash_x * 4.))
                         .bottom(px(1.))
-                        .h(px(metrics.height * 0.5))
+                        .h(px(metrics.height * 0.56))
                         .rounded(px(999.))
-                        .bg(material.contact_shadow.opacity(0.24 * opacity)),
+                        .bg(material.contact_shadow.opacity(0.3 * opacity)),
                 )
                 .child(
                     div()
                         .absolute()
-                        .left(px(4.))
-                        .right(px(4.))
-                        .top(px(3.))
-                        .h(px(metrics.height * 0.36))
+                        .left(px(5.))
+                        .right(px(5.))
+                        .top(px(3. + motion.pressure * 0.8))
+                        .h(px(metrics.height * 0.3))
                         .rounded(px(999.))
                         .bg(linear_gradient(
                             180.,
-                            linear_color_stop(material.specular.opacity(0.36 * opacity), 0.0),
-                            linear_color_stop(material.shell_mid.opacity(0.16 * opacity), 1.0),
+                            linear_color_stop(material.specular.opacity(0.3 * opacity), 0.0),
+                            linear_color_stop(material.shell_mid.opacity(0.18 * opacity), 1.0),
                         )),
                 )
                 .child(
                     div()
                         .absolute()
-                        .left(px(shape.core_left - 9.))
-                        .right(px(shape.core_right - 9.))
-                        .top(px((shape.core_top - 5.).max(3.)))
-                        .bottom(px((shape.core_bottom - 6.).max(3.)))
+                        .left(px(shape.core_left - 12.))
+                        .right(px(shape.core_right - 12.))
+                        .top(px((shape.core_top - 7.).max(4.)))
+                        .bottom(px((shape.core_bottom - 8.).max(4.)))
                         .rounded(px(999.))
                         .border_1()
                         .border_color(
                             material
                                 .rim
-                                .opacity((0.14 + motion.rim_pressure * 0.1) * opacity),
+                                .opacity((0.2 + motion.rim_pressure * 0.12) * opacity),
                         )
                         .bg(linear_gradient(
                             180.,
@@ -357,7 +359,7 @@ pub fn jelly_action_button(
                             linear_color_stop(
                                 material
                                     .shell_mid
-                                    .opacity((0.2 + motion.aura * 0.1) * opacity),
+                                    .opacity((0.32 + motion.aura * 0.12) * opacity),
                                 1.0,
                             ),
                         ))
@@ -382,16 +384,16 @@ pub fn jelly_action_button(
                         this.child(
                             div()
                                 .absolute()
-                                .left(px(shape.core_left))
-                                .right(px(shape.core_right))
-                                .top(px(shape.core_top.max(4.)))
-                                .bottom(px(shape.core_bottom.max(4.)))
+                                .left(px(shape.core_left + 5.))
+                                .right(px(shape.core_right + 5.))
+                                .top(px((shape.core_top + 3.).max(6.)))
+                                .bottom(px((shape.core_bottom + 4.).max(6.)))
                                 .rounded(px(shape.core_rounding))
                                 .border_1()
                                 .border_color(
                                     material
                                         .rim
-                                        .opacity((0.16 + motion.rim_pressure * 0.12) * opacity),
+                                        .opacity((0.12 + motion.rim_pressure * 0.08) * opacity),
                                 )
                                 .bg(linear_gradient(
                                     180.,
@@ -422,20 +424,20 @@ pub fn jelly_action_button(
                     material,
                     motion,
                     if matches!(config.size, JellyButtonSize::Standard) {
-                        42.
+                        52.
                     } else {
-                        26.
+                        32.
                     },
-                    metrics.highlight_h,
+                    metrics.highlight_h * 0.82,
                     opacity,
                 ))
                 .child(
                     div()
                         .absolute()
-                        .left(px(36. - motion.squash_x * 5.))
-                        .right(px(48. - motion.squash_x * 3.))
-                        .top(px(3. + motion.pressure * 1.5))
-                        .h(px(1.8))
+                        .left(px(46. - motion.squash_x * 6.))
+                        .right(px(62. - motion.squash_x * 4.))
+                        .top(px(4. + motion.pressure * 1.8))
+                        .h(px(1.4))
                         .rounded(px(999.))
                         .bg(material
                             .rim
