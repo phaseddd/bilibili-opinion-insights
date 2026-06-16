@@ -85,12 +85,12 @@ pub(crate) fn rasterize_button_material_bitmap(
         - squash_y * request.height * 0.032;
     let shell_radius = (shell_bottom - shell_top) * (0.5 + rebound.max(0.) * 0.035);
 
-    let trough_inset_x = request.width * (0.235 + pressure * 0.02);
-    let trough_top = request.height * (0.31 + pressure * 0.035 + squash_y * 0.018);
-    let trough_bottom = request.height * (0.71 + pressure * 0.025 - squash_y * 0.022);
-    let core_inset_x = request.width * (0.305 + pressure * 0.026);
-    let core_top = request.height * (0.405 + pressure * 0.038 + squash_y * 0.018);
-    let core_bottom = request.height * (0.62 + pressure * 0.03 - squash_y * 0.018);
+    let trough_inset_x = request.width * (0.265 + pressure * 0.024);
+    let trough_top = request.height * (0.335 + pressure * 0.035 + squash_y * 0.018);
+    let trough_bottom = request.height * (0.695 + pressure * 0.025 - squash_y * 0.022);
+    let core_inset_x = request.width * (0.365 + pressure * 0.028);
+    let core_top = request.height * (0.438 + pressure * 0.038 + squash_y * 0.018);
+    let core_bottom = request.height * (0.585 + pressure * 0.03 - squash_y * 0.018);
 
     for row in 0..height {
         let y = (row as f32 + 0.5) * pixel_size;
@@ -131,12 +131,12 @@ pub(crate) fn rasterize_button_material_bitmap(
                 let bottom_depth = (y / request.height).powf(2.1) * 0.2;
                 let mut color = shell_gradient(&palette, progress);
 
-                color = color.overlay(palette.inner_glow, 0.22 + aura * 0.16 + loading * 0.1);
+                color = color.overlay(palette.inner_glow, 0.26 + aura * 0.2 + loading * 0.1);
                 color = color.overlay(palette.contact_shadow, bottom_depth + pressure * 0.05);
                 color = color.overlay(palette.specular, top_light);
                 color = color.overlay(
                     palette.rim,
-                    rim * (0.34 + request.motion.rim_pressure * 0.2),
+                    rim * (0.4 + request.motion.rim_pressure * 0.22),
                 );
 
                 pixel = blend_over(
@@ -179,9 +179,9 @@ pub(crate) fn rasterize_button_material_bitmap(
                 let core_lift = (1. - y / request.height).clamp(0., 1.);
                 let core = palette
                     .core_top
-                    .overlay(palette.core_bottom, 0.34 + pressure * 0.16)
-                    .overlay(palette.specular, core_lift.powf(2.8) * 0.16)
-                    .with_alpha(core_coverage * (0.36 + palette.core_alpha * 0.12) * opacity);
+                    .overlay(palette.core_bottom, 0.42 + pressure * 0.18)
+                    .overlay(palette.specular, core_lift.powf(2.8) * 0.1)
+                    .with_alpha(core_coverage * (0.18 + palette.core_alpha * 0.08) * opacity);
                 pixel = blend_over(pixel, core);
             }
 
@@ -447,6 +447,19 @@ mod tests {
     }
 
     #[test]
+    fn button_bitmap_keeps_inner_core_smaller_than_shell() {
+        let bitmap = sample_bitmap(false);
+        let shell_pixels = covered_pixel_count(&bitmap, 170);
+        let core_pixels = pale_core_pixel_count(&bitmap);
+
+        assert!(shell_pixels > 0);
+        assert!(
+            core_pixels as f32 / (shell_pixels as f32) < 0.08,
+            "core coverage should stay visually subordinate to the outer jelly shell"
+        );
+    }
+
+    #[test]
     fn button_bitmap_can_create_gpui_render_image() {
         let bitmap = sample_bitmap(false);
         let image = bitmap
@@ -545,5 +558,28 @@ mod tests {
         let top = top.expect("bitmap should have covered pixels");
         let bottom = bottom.expect("bitmap should have covered pixels");
         bottom - top + 1
+    }
+
+    fn covered_pixel_count(bitmap: &super::JellyButtonBitmap, alpha_threshold: u8) -> usize {
+        bitmap
+            .rgba8()
+            .chunks_exact(BYTES_PER_PIXEL)
+            .filter(|pixel| pixel[3] > alpha_threshold)
+            .count()
+    }
+
+    fn pale_core_pixel_count(bitmap: &super::JellyButtonBitmap) -> usize {
+        bitmap
+            .rgba8()
+            .chunks_exact(BYTES_PER_PIXEL)
+            .filter(|pixel| {
+                pixel[3] > 54
+                    && pixel[0] > 205
+                    && pixel[1] > 215
+                    && pixel[2] > 220
+                    && pixel[0].abs_diff(pixel[1]) < 28
+                    && pixel[1].abs_diff(pixel[2]) < 28
+            })
+            .count()
     }
 }
