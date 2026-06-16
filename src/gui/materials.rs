@@ -14,7 +14,7 @@ pub(crate) enum JellyTone {
     Error,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct JellyMaterialToken {
     pub(crate) shell_start: Hsla,
     pub(crate) shell_mid: Hsla,

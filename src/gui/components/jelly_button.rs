@@ -1,7 +1,7 @@
 use gpui::{
-    FontWeight, InteractiveElement as _, ParentElement, SharedString,
-    StatefulInteractiveElement as _, Styled as _, div, hsla, linear_color_stop, linear_gradient,
-    prelude::FluentBuilder as _, px,
+    Bounds, Corners, FontWeight, InteractiveElement as _, ParentElement, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, hsla, linear_color_stop,
+    linear_gradient, point, prelude::FluentBuilder as _, px, size,
 };
 
 use crate::gui::materials::{JellyMaterialToken, JellyTone};
@@ -9,6 +9,7 @@ use crate::gui::motion::JellyMotionSnapshot;
 use crate::gui::rendering::gpui_layers::{
     lower_refractive_ridge, shell_contact_shadow, top_specular_band,
 };
+use crate::gui::rendering::jelly_image_cache::JellyButtonImage;
 use crate::gui::theme::Palette;
 
 #[derive(Clone, Copy)]
@@ -25,7 +26,7 @@ pub enum JellyButtonSize {
     Compact,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct JellyButtonConfig {
     pub tone: JellyActionTone,
     pub enabled: bool,
@@ -35,6 +36,7 @@ pub struct JellyButtonConfig {
     pub id_seed: usize,
     pub size: JellyButtonSize,
     pub motion: JellyMotionSnapshot,
+    pub image: Option<JellyButtonImage>,
 }
 
 #[derive(Clone, Copy)]
@@ -44,7 +46,7 @@ pub enum HeaderActionKind {
     Primary,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct HeaderButtonConfig {
     pub kind: HeaderActionKind,
     pub enabled: bool,
@@ -52,6 +54,7 @@ pub struct HeaderButtonConfig {
     pub group: &'static str,
     pub id_seed: usize,
     pub motion: JellyMotionSnapshot,
+    pub image: Option<JellyButtonImage>,
 }
 
 #[derive(Clone, Copy)]
@@ -136,6 +139,7 @@ pub fn header_action_button(
             id_seed: config.id_seed,
             size: JellyButtonSize::Compact,
             motion: config.motion,
+            image: config.image,
         },
     )
 }
@@ -155,7 +159,7 @@ fn tone_token(tone: JellyActionTone, palette: &Palette) -> JellyMaterialToken {
 fn button_shape(
     metrics: JellyButtonMetrics,
     material: JellyMaterialToken,
-    config: JellyButtonConfig,
+    config: &JellyButtonConfig,
 ) -> JellyButtonShape {
     let motion = config.motion;
     let shell_depth = material.shell_depth;
@@ -216,7 +220,7 @@ pub fn jelly_action_button(
     let label = label.into();
     let material = tone_token(config.tone, palette);
     let metrics = config.size.metrics();
-    let shape = button_shape(metrics, material, config);
+    let shape = button_shape(metrics, material, &config);
     let opacity = shape.disabled_alpha;
     let motion = config.motion;
     let group_name = SharedString::from(config.group);
@@ -224,6 +228,8 @@ pub fn jelly_action_button(
     let shell_alpha = material.shell_alpha * opacity;
     let core_alpha = material.core_alpha * 0.48 * opacity;
     let trough_alpha = (0.3 + motion.inner_lag * 0.18 + motion.pressure * 0.14) * opacity;
+    let button_image = config.image.clone();
+    let has_button_image = button_image.is_some();
 
     div()
         .relative()
@@ -303,158 +309,197 @@ pub fn jelly_action_button(
                         .right(px(-9.))
                         .border_color(material.rim.opacity(0.58 * opacity))
                 })
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(5. - motion.squash_x * 5.))
-                        .right(px(5. - motion.squash_x * 4.))
-                        .top(px(5. + motion.pressure * 1.4))
-                        .bottom(px(3. - motion.pressure * 0.9))
-                        .rounded(px(999.))
-                        .bg(material
-                            .shell_mid
-                            .opacity((0.46 + motion.gloss_phase * 0.12) * opacity)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(2. - motion.squash_x * 5.))
-                        .right(px(2. - motion.squash_x * 4.))
-                        .bottom(px(1.))
-                        .h(px(metrics.height * 0.56))
-                        .rounded(px(999.))
-                        .bg(material.contact_shadow.opacity(0.3 * opacity)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(5.))
-                        .right(px(5.))
-                        .top(px(3. + motion.pressure * 0.8))
-                        .h(px(metrics.height * 0.3))
-                        .rounded(px(999.))
-                        .bg(linear_gradient(
-                            180.,
-                            linear_color_stop(material.specular.opacity(0.3 * opacity), 0.0),
-                            linear_color_stop(material.shell_mid.opacity(0.18 * opacity), 1.0),
-                        )),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(shape.core_left - 12.))
-                        .right(px(shape.core_right - 12.))
-                        .top(px((shape.core_top - 7.).max(4.)))
-                        .bottom(px((shape.core_bottom - 8.).max(4.)))
-                        .rounded(px(999.))
-                        .border_1()
-                        .border_color(
-                            material
-                                .rim
-                                .opacity((0.2 + motion.rim_pressure * 0.12) * opacity),
+                .when(has_button_image, move |this| {
+                    let Some(image) = button_image.clone() else {
+                        return this;
+                    };
+                    this.child(
+                        canvas(
+                            move |_, _window: &mut Window, _cx| (),
+                            move |bounds, _, window: &mut Window, _cx| {
+                                let origin_x = f32::from(bounds.origin.x);
+                                let origin_y = f32::from(bounds.origin.y);
+                                let track_w = f32::from(bounds.size.width);
+                                let track_h = f32::from(bounds.size.height);
+                                let image_bounds = Bounds::new(
+                                    point(px(origin_x), px(origin_y)),
+                                    size(px(track_w), px(track_h)),
+                                );
+                                let _ = window.paint_image(
+                                    image_bounds,
+                                    Corners::from(px(track_h * 0.5)),
+                                    image.image.clone(),
+                                    0,
+                                    false,
+                                );
+                            },
                         )
-                        .bg(linear_gradient(
-                            180.,
-                            linear_color_stop(material.contact_shadow.opacity(trough_alpha), 0.0),
-                            linear_color_stop(
+                        .absolute()
+                        .inset_0(),
+                    )
+                })
+                .when(!has_button_image, |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .left(px(5. - motion.squash_x * 5.))
+                            .right(px(5. - motion.squash_x * 4.))
+                            .top(px(5. + motion.pressure * 1.4))
+                            .bottom(px(3. - motion.pressure * 0.9))
+                            .rounded(px(999.))
+                            .bg(material
+                                .shell_mid
+                                .opacity((0.46 + motion.gloss_phase * 0.12) * opacity)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(2. - motion.squash_x * 5.))
+                            .right(px(2. - motion.squash_x * 4.))
+                            .bottom(px(1.))
+                            .h(px(metrics.height * 0.56))
+                            .rounded(px(999.))
+                            .bg(material.contact_shadow.opacity(0.3 * opacity)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(5.))
+                            .right(px(5.))
+                            .top(px(3. + motion.pressure * 0.8))
+                            .h(px(metrics.height * 0.3))
+                            .rounded(px(999.))
+                            .bg(linear_gradient(
+                                180.,
+                                linear_color_stop(material.specular.opacity(0.3 * opacity), 0.0),
+                                linear_color_stop(material.shell_mid.opacity(0.18 * opacity), 1.0),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(shape.core_left - 12.))
+                            .right(px(shape.core_right - 12.))
+                            .top(px((shape.core_top - 7.).max(4.)))
+                            .bottom(px((shape.core_bottom - 8.).max(4.)))
+                            .rounded(px(999.))
+                            .border_1()
+                            .border_color(
                                 material
-                                    .shell_mid
-                                    .opacity((0.32 + motion.aura * 0.12) * opacity),
-                                1.0,
-                            ),
-                        ))
-                        .shadow(vec![
-                            gpui::BoxShadow {
-                                color: material.contact_shadow.opacity(0.24 * opacity),
-                                offset: gpui::point(px(0.), px(4.)),
-                                blur_radius: px(12.),
-                                spread_radius: px(-8.),
-                            },
-                            gpui::BoxShadow {
-                                color: material.specular.opacity(0.12 * opacity),
-                                offset: gpui::point(px(0.), px(-1.)),
-                                blur_radius: px(0.),
-                                spread_radius: px(0.),
-                            },
-                        ]),
-                )
-                .when(
-                    shape.core_left + shape.core_right < metrics.min_width - 28.,
-                    |this| {
-                        this.child(
-                            div()
-                                .absolute()
-                                .left(px(shape.core_left + 5.))
-                                .right(px(shape.core_right + 5.))
-                                .top(px((shape.core_top + 3.).max(6.)))
-                                .bottom(px((shape.core_bottom + 4.).max(6.)))
-                                .rounded(px(shape.core_rounding))
-                                .border_1()
-                                .border_color(
+                                    .rim
+                                    .opacity((0.2 + motion.rim_pressure * 0.12) * opacity),
+                            )
+                            .bg(linear_gradient(
+                                180.,
+                                linear_color_stop(
+                                    material.contact_shadow.opacity(trough_alpha),
+                                    0.0,
+                                ),
+                                linear_color_stop(
                                     material
-                                        .rim
-                                        .opacity((0.12 + motion.rim_pressure * 0.08) * opacity),
-                                )
-                                .bg(linear_gradient(
-                                    180.,
-                                    linear_color_stop(material.core_top.opacity(core_alpha), 0.0),
-                                    linear_color_stop(
-                                        material.core_bottom.opacity(core_alpha),
-                                        1.0,
-                                    ),
-                                ))
-                                .shadow(vec![
-                                    gpui::BoxShadow {
-                                        color: hsla(0., 0., 1., 0.12 * opacity),
-                                        offset: gpui::point(px(0.), px(1.)),
-                                        blur_radius: px(0.),
-                                        spread_radius: px(0.),
-                                    },
-                                    gpui::BoxShadow {
-                                        color: material.state_aura.opacity(0.16 * opacity),
-                                        offset: gpui::point(px(0.), px(8.)),
-                                        blur_radius: px(20.),
-                                        spread_radius: px(-7.),
-                                    },
-                                ]),
-                        )
-                    },
-                )
-                .child(top_specular_band(
-                    material,
-                    motion,
-                    if matches!(config.size, JellyButtonSize::Standard) {
-                        52.
-                    } else {
-                        32.
-                    },
-                    metrics.highlight_h * 0.82,
-                    opacity,
-                ))
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(46. - motion.squash_x * 6.))
-                        .right(px(62. - motion.squash_x * 4.))
-                        .top(px(4. + motion.pressure * 1.8))
-                        .h(px(1.4))
-                        .rounded(px(999.))
-                        .bg(material
-                            .rim
-                            .opacity((0.24 + motion.rim_pressure * 0.14) * opacity)),
-                )
-                .child(lower_refractive_ridge(material, motion, opacity))
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(12.))
-                        .right(px(12.))
-                        .bottom(px(0.))
-                        .h(px(1.))
-                        .bg(material
-                            .rim
-                            .opacity((0.26 + motion.rim_pressure * 0.2) * opacity)),
-                ),
+                                        .shell_mid
+                                        .opacity((0.32 + motion.aura * 0.12) * opacity),
+                                    1.0,
+                                ),
+                            ))
+                            .shadow(vec![
+                                gpui::BoxShadow {
+                                    color: material.contact_shadow.opacity(0.24 * opacity),
+                                    offset: gpui::point(px(0.), px(4.)),
+                                    blur_radius: px(12.),
+                                    spread_radius: px(-8.),
+                                },
+                                gpui::BoxShadow {
+                                    color: material.specular.opacity(0.12 * opacity),
+                                    offset: gpui::point(px(0.), px(-1.)),
+                                    blur_radius: px(0.),
+                                    spread_radius: px(0.),
+                                },
+                            ]),
+                    )
+                })
+                .when(!has_button_image, |this| {
+                    this.when(
+                        shape.core_left + shape.core_right < metrics.min_width - 28.,
+                        |this| {
+                            this.child(
+                                div()
+                                    .absolute()
+                                    .left(px(shape.core_left + 5.))
+                                    .right(px(shape.core_right + 5.))
+                                    .top(px((shape.core_top + 3.).max(6.)))
+                                    .bottom(px((shape.core_bottom + 4.).max(6.)))
+                                    .rounded(px(shape.core_rounding))
+                                    .border_1()
+                                    .border_color(
+                                        material
+                                            .rim
+                                            .opacity((0.12 + motion.rim_pressure * 0.08) * opacity),
+                                    )
+                                    .bg(linear_gradient(
+                                        180.,
+                                        linear_color_stop(
+                                            material.core_top.opacity(core_alpha),
+                                            0.0,
+                                        ),
+                                        linear_color_stop(
+                                            material.core_bottom.opacity(core_alpha),
+                                            1.0,
+                                        ),
+                                    ))
+                                    .shadow(vec![
+                                        gpui::BoxShadow {
+                                            color: hsla(0., 0., 1., 0.12 * opacity),
+                                            offset: gpui::point(px(0.), px(1.)),
+                                            blur_radius: px(0.),
+                                            spread_radius: px(0.),
+                                        },
+                                        gpui::BoxShadow {
+                                            color: material.state_aura.opacity(0.16 * opacity),
+                                            offset: gpui::point(px(0.), px(8.)),
+                                            blur_radius: px(20.),
+                                            spread_radius: px(-7.),
+                                        },
+                                    ]),
+                            )
+                        },
+                    )
+                    .child(top_specular_band(
+                        material,
+                        motion,
+                        if matches!(config.size, JellyButtonSize::Standard) {
+                            52.
+                        } else {
+                            32.
+                        },
+                        metrics.highlight_h * 0.82,
+                        opacity,
+                    ))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(46. - motion.squash_x * 6.))
+                            .right(px(62. - motion.squash_x * 4.))
+                            .top(px(4. + motion.pressure * 1.8))
+                            .h(px(1.4))
+                            .rounded(px(999.))
+                            .bg(material
+                                .rim
+                                .opacity((0.24 + motion.rim_pressure * 0.14) * opacity)),
+                    )
+                    .child(lower_refractive_ridge(material, motion, opacity))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(12.))
+                            .right(px(12.))
+                            .bottom(px(0.))
+                            .h(px(1.))
+                            .bg(material
+                                .rim
+                                .opacity((0.26 + motion.rim_pressure * 0.2) * opacity)),
+                    )
+                }),
         )
         .child(
             div()

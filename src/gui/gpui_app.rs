@@ -32,10 +32,12 @@ use crate::gui::components::jelly_switch::{
     JellySwitchConfig, JellySwitchSize, JellySwitchTone, jelly_switch,
 };
 use crate::gui::components::jelly_task_lane::{jelly_task_lane, jelly_task_lane_tone};
+use crate::gui::materials::{JellyMaterialToken, JellyTone};
 use crate::gui::messages::{AuthMessage, GuiMessage};
-use crate::gui::motion::wave_between;
+use crate::gui::motion::{JellyMotionSnapshot, wave_between};
 use crate::gui::rendering::jelly_image_cache::{
-    JellyProgressImagePhase, JellyProgressImageQuality, JellyProgressImageRequest,
+    JellyButtonImage, JellyButtonImageRequest, JellyProgressImagePhase, JellyProgressImageQuality,
+    JellyProgressImageRequest,
 };
 use crate::gui::state::auth::{
     AuthPhase, AuthState, CredentialSource, QrState, SessionKind, SessionMode,
@@ -297,6 +299,34 @@ impl BiliOpinionGui {
             || task_motion
             || self.task.has_active_visual_motion()
             || self.visual.has_active_control_motion()
+    }
+
+    fn button_image(
+        &mut self,
+        palette: &Palette,
+        tone: JellyActionTone,
+        enabled: bool,
+        loading: bool,
+        size: JellyButtonSize,
+        motion: JellyMotionSnapshot,
+    ) -> Option<JellyButtonImage> {
+        let jelly_tone = button_tone(tone);
+        let (width, height) = match size {
+            JellyButtonSize::Standard => (360., 66.),
+            JellyButtonSize::Compact => (148., 48.),
+        };
+
+        self.visual
+            .image_cache
+            .button_image(JellyButtonImageRequest {
+                width,
+                height,
+                motion,
+                tone: jelly_tone,
+                material: JellyMaterialToken::for_tone(jelly_tone, palette),
+                enabled,
+                loading,
+            })
     }
 
     fn build_draft(&self, cx: &App) -> Result<CollectionDraft, String> {
@@ -734,7 +764,7 @@ impl BiliOpinionGui {
             )
     }
 
-    fn render_identity_gate(&self, palette: &Palette, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_identity_gate(&mut self, palette: &Palette, cx: &mut Context<Self>) -> gpui::Div {
         let motion_tick = self.visual.motion_tick;
         let can_login = !matches!(
             self.auth.phase,
@@ -767,6 +797,38 @@ impl BiliOpinionGui {
         let anonymous_motion = self
             .visual
             .button_motion(ButtonMotionId::Anonymous, false, false);
+        let enter_image = self.button_image(
+            palette,
+            JellyActionTone::Primary,
+            can_enter,
+            false,
+            JellyButtonSize::Standard,
+            enter_motion,
+        );
+        let qr_image = self.button_image(
+            palette,
+            JellyActionTone::Cyan,
+            can_login,
+            qr_loading,
+            JellyButtonSize::Standard,
+            qr_motion,
+        );
+        let recheck_image = self.button_image(
+            palette,
+            JellyActionTone::Neutral,
+            !self.auth.is_busy(),
+            self.auth.phase == AuthPhase::BootChecking,
+            JellyButtonSize::Standard,
+            recheck_motion,
+        );
+        let anonymous_image = self.button_image(
+            palette,
+            JellyActionTone::Warning,
+            !matches!(self.auth.phase, AuthPhase::BootChecking),
+            false,
+            JellyButtonSize::Standard,
+            anonymous_motion,
+        );
 
         div()
             .size_full()
@@ -893,6 +955,7 @@ impl BiliOpinionGui {
                                                                         as usize,
                                                                 size: JellyButtonSize::Standard,
                                                                 motion: enter_motion,
+                                                                image: enter_image,
                                                             },
                                                         )
                                                         .flex_1()
@@ -928,6 +991,7 @@ impl BiliOpinionGui {
                                                                     as usize,
                                                                 size: JellyButtonSize::Standard,
                                                                 motion: qr_motion,
+                                                                image: qr_image,
                                                             },
                                                         )
                                                         .flex_1()
@@ -969,6 +1033,7 @@ impl BiliOpinionGui {
                                                                         as usize,
                                                                 size: JellyButtonSize::Standard,
                                                                 motion: recheck_motion,
+                                                                image: recheck_image,
                                                             },
                                                         )
                                                         .flex_1()
@@ -1007,6 +1072,7 @@ impl BiliOpinionGui {
                                                                     as usize,
                                                                 size: JellyButtonSize::Standard,
                                                                 motion: anonymous_motion,
+                                                                image: anonymous_image,
                                                             },
                                                         )
                                                         .flex_1()
@@ -1065,11 +1131,49 @@ impl BiliOpinionGui {
     }
 
     fn render_header(
-        &self,
+        &mut self,
         palette: &Palette,
         can_start: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let motion_tick = self.visual.motion_tick;
+        let clear_motion = self
+            .visual
+            .button_motion(ButtonMotionId::HeaderClear, false, false);
+        let cancel_loading = self.task.phase == TaskPhase::Cancelling;
+        let cancel_motion =
+            self.visual
+                .button_motion(ButtonMotionId::HeaderCancel, cancel_loading, false);
+        let start_loading = self.task.phase.is_busy();
+        let start_error = self.task.phase == TaskPhase::Failed;
+        let start_motion =
+            self.visual
+                .button_motion(ButtonMotionId::HeaderStart, start_loading, start_error);
+        let clear_image = self.button_image(
+            palette,
+            JellyActionTone::Neutral,
+            can_start,
+            false,
+            JellyButtonSize::Compact,
+            clear_motion,
+        );
+        let cancel_image = self.button_image(
+            palette,
+            JellyActionTone::Warning,
+            self.task.phase == TaskPhase::Running,
+            cancel_loading,
+            JellyButtonSize::Compact,
+            cancel_motion,
+        );
+        let start_image = self.button_image(
+            palette,
+            JellyActionTone::Primary,
+            can_start,
+            start_loading,
+            JellyButtonSize::Compact,
+            start_motion,
+        );
+
         h_flex()
             .w_full()
             .justify_between()
@@ -1115,14 +1219,11 @@ impl BiliOpinionGui {
                             HeaderButtonConfig {
                                 kind: HeaderActionKind::Ghost,
                                 enabled: can_start,
-                                motion_tick: self.visual.motion_tick,
+                                motion_tick,
                                 group: "header-clear-group",
                                 id_seed: ButtonMotionId::HeaderClear as usize,
-                                motion: self.visual.button_motion(
-                                    ButtonMotionId::HeaderClear,
-                                    false,
-                                    false,
-                                ),
+                                motion: clear_motion,
+                                image: clear_image,
                             },
                         )
                         .id("clear-log-action")
@@ -1138,14 +1239,11 @@ impl BiliOpinionGui {
                             HeaderButtonConfig {
                                 kind: HeaderActionKind::Outline,
                                 enabled: self.task.phase == TaskPhase::Running,
-                                motion_tick: self.visual.motion_tick,
+                                motion_tick,
                                 group: "header-cancel-group",
                                 id_seed: ButtonMotionId::HeaderCancel as usize,
-                                motion: self.visual.button_motion(
-                                    ButtonMotionId::HeaderCancel,
-                                    self.task.phase == TaskPhase::Cancelling,
-                                    false,
-                                ),
+                                motion: cancel_motion,
+                                image: cancel_image,
                             },
                         )
                         .id("cancel-collection-action")
@@ -1169,14 +1267,11 @@ impl BiliOpinionGui {
                             HeaderButtonConfig {
                                 kind: HeaderActionKind::Primary,
                                 enabled: can_start,
-                                motion_tick: self.visual.motion_tick,
+                                motion_tick,
                                 group: "header-start-group",
                                 id_seed: ButtonMotionId::HeaderStart as usize,
-                                motion: self.visual.button_motion(
-                                    ButtonMotionId::HeaderStart,
-                                    self.task.phase.is_busy(),
-                                    self.task.phase == TaskPhase::Failed,
-                                ),
+                                motion: start_motion,
+                                image: start_image,
                             },
                         )
                         .id("start-collection-action")
@@ -1725,5 +1820,14 @@ fn progress_tone(phase: TaskPhase) -> crate::gui::materials::JellyTone {
         TaskPhase::Running => crate::gui::materials::JellyTone::Primary,
         TaskPhase::Completed => crate::gui::materials::JellyTone::Success,
         TaskPhase::Failed => crate::gui::materials::JellyTone::Error,
+    }
+}
+
+fn button_tone(tone: JellyActionTone) -> JellyTone {
+    match tone {
+        JellyActionTone::Primary => JellyTone::Primary,
+        JellyActionTone::Cyan => JellyTone::Cyan,
+        JellyActionTone::Warning => JellyTone::Warning,
+        JellyActionTone::Neutral => JellyTone::Neutral,
     }
 }
