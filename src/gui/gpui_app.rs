@@ -34,7 +34,7 @@ use crate::gui::components::jelly_switch::{
 use crate::gui::components::jelly_task_lane::{jelly_task_lane, jelly_task_lane_tone};
 use crate::gui::materials::{JellyMaterialToken, JellyTone};
 use crate::gui::messages::{AuthMessage, GuiMessage};
-use crate::gui::motion::{JellyMotionSnapshot, wave_between};
+use crate::gui::motion::{JellyMotionSnapshot, VISUAL_MOTION_TICK_MS, wave_between};
 use crate::gui::rendering::jelly_image_cache::{
     JellyButtonImage, JellyButtonImageRequest, JellyCapsuleImage, JellyCapsuleImageRequest,
     JellyProgressImagePhase, JellyProgressImageQuality, JellyProgressImageRequest,
@@ -266,7 +266,7 @@ impl BiliOpinionGui {
         cx.spawn(async move |view, cx| {
             loop {
                 cx.background_executor()
-                    .timer(Duration::from_millis(72))
+                    .timer(Duration::from_millis(VISUAL_MOTION_TICK_MS))
                     .await;
 
                 let keep_running = match view.update(cx, |view, cx| {
@@ -348,7 +348,7 @@ impl BiliOpinionGui {
     ) -> Option<JellySwitchImage> {
         let jelly_tone = switch_tone(request.tone);
         let (width, height) = match request.size {
-            JellySwitchSize::Standard => (142., 52.),
+            JellySwitchSize::Standard => (118., 42.),
             JellySwitchSize::Compact => (100., 36.),
         };
 

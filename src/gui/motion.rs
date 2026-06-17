@@ -1,6 +1,10 @@
 use std::f32::consts::TAU;
 
 pub const PROGRESS_CHAIN_POINTS: usize = 9;
+pub const VISUAL_MOTION_TICK_MS: u64 = 24;
+pub const VISUAL_MOTION_DT: f32 = 0.024;
+
+const REFERENCE_MOTION_DT: f32 = 0.072;
 
 #[derive(Clone, Copy, Debug)]
 pub struct SpringToken {
@@ -301,14 +305,15 @@ impl JellyProgressMotionState {
         (self.follow.value * 100.).clamp(0., 100.)
     }
 
-    pub fn tick(&mut self, phase: ProgressMotionPhase) -> bool {
+    pub fn tick(&mut self, phase: ProgressMotionPhase, dt: f32) -> bool {
         let tokens = JellyMotionTokens::default();
         self.follow.token = phase.follow_token();
+        let dt = dt.clamp(0.001, 0.05);
 
-        let substeps = 4;
-        let dt = 0.072 / substeps as f32;
+        let substeps = (dt / 0.012).ceil().clamp(1., 4.) as usize;
+        let step_dt = dt / substeps as f32;
         for _ in 0..substeps {
-            self.follow.tick(dt);
+            self.follow.tick(step_dt);
         }
         self.follow.value = self.follow.value.clamp(0., 1.);
 
@@ -319,11 +324,13 @@ impl JellyProgressMotionState {
         } else {
             0.78
         };
-        self.pulse *= pulse_decay;
-        self.compression = (self.compression * 0.76 + velocity_energy * 0.18).clamp(0., 1.);
-        self.cap_rebound =
-            (self.cap_rebound * 0.8 + self.follow.velocity * 0.018).clamp(-0.52, 0.76);
-        self.tick_chain(phase, velocity_energy);
+        self.pulse *= decay_for_dt(pulse_decay, dt);
+        self.compression =
+            (self.compression * decay_for_dt(0.76, dt) + velocity_energy * 0.18).clamp(0., 1.);
+        self.cap_rebound = (self.cap_rebound * decay_for_dt(0.8, dt)
+            + self.follow.velocity * 0.018)
+            .clamp(-0.52, 0.76);
+        self.tick_chain(phase, velocity_energy, dt);
 
         self.is_active(phase)
     }
@@ -428,8 +435,7 @@ impl JellyProgressMotionState {
         }
     }
 
-    fn tick_chain(&mut self, phase: ProgressMotionPhase, velocity_energy: f32) {
-        let dt = 0.072_f32;
+    fn tick_chain(&mut self, phase: ProgressMotionPhase, velocity_energy: f32, dt: f32) {
         let live_factor = if phase.is_live() { 1. } else { 0.45 };
         let damping = match phase {
             ProgressMotionPhase::Completed => 8.6,
@@ -482,6 +488,10 @@ pub fn wave_between(motion_tick: u64, speed: f32, min: f32, max: f32) -> f32 {
     min + (max - min) * wave_01(motion_tick, speed)
 }
 
+fn decay_for_dt(base_decay: f32, dt: f32) -> f32 {
+    base_decay.clamp(0., 1.).powf(dt / REFERENCE_MOTION_DT)
+}
+
 #[allow(dead_code)]
 pub fn jelly_rebound(age_ticks: u64, duration_ticks: u64) -> f32 {
     if age_ticks > duration_ticks || duration_ticks == 0 {
@@ -494,7 +504,9 @@ pub fn jelly_rebound(age_ticks: u64, duration_ticks: u64) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{JellyProgressMotionState, PROGRESS_CHAIN_POINTS, ProgressMotionPhase};
+    use super::{
+        JellyProgressMotionState, PROGRESS_CHAIN_POINTS, ProgressMotionPhase, VISUAL_MOTION_DT,
+    };
 
     #[test]
     fn progress_chain_keeps_endpoints_pinned_and_moves_middle() {
@@ -502,7 +514,7 @@ mod tests {
 
         motion.set_target_percent(68.);
         for _ in 0..6 {
-            motion.tick(ProgressMotionPhase::Running);
+            motion.tick(ProgressMotionPhase::Running, VISUAL_MOTION_DT);
         }
         let snapshot = motion.snapshot(6, ProgressMotionPhase::Running);
 
@@ -517,10 +529,10 @@ mod tests {
 
         motion.set_target_percent(42.);
         for _ in 0..4 {
-            motion.tick(ProgressMotionPhase::Running);
+            motion.tick(ProgressMotionPhase::Running, VISUAL_MOTION_DT);
         }
         motion.trigger_phase_pulse(ProgressMotionPhase::Failed);
-        motion.tick(ProgressMotionPhase::Failed);
+        motion.tick(ProgressMotionPhase::Failed, VISUAL_MOTION_DT);
         let snapshot = motion.snapshot(8, ProgressMotionPhase::Failed);
 
         assert_eq!(snapshot.target_percent, 42.);

@@ -270,8 +270,8 @@ fn ribbon_profile_with_offsets(
     let center_y = shape.origin_y + height * 0.5 + y_offset;
     let base_half = height * 0.28 * thickness_scale.max(0.08);
     let wave_phase = shape.phase;
-    let active_amp = height * (0.08 + pressure * 0.14 + rebound.abs() * 0.05);
-    let end_bulge = height * (0.08 + rebound.max(0.) * 0.12 + compression * 0.06);
+    let active_amp = height * (0.1 + pressure * 0.18 + rebound.abs() * 0.07);
+    let end_bulge = height * (0.1 + rebound.max(0.) * 0.16 + compression * 0.08);
     let mut centers = [(0., 0.); RIBBON_POINTS];
     let mut half_thicknesses = [0.; RIBBON_POINTS];
 
@@ -283,8 +283,8 @@ fn ribbon_profile_with_offsets(
         let local_wave = (wave_phase + t * std::f32::consts::PI * 1.6).sin();
         let arch = -sine * active_amp * (0.42 + compression * 0.58);
         let chain_arch = chain_offsets[idx].clamp(-0.5, 0.35) * height;
-        let wobble = local_wave * pressure * height * 0.035 * end_taper;
-        let tail_pull = rebound * (t - 0.5) * height * 0.11;
+        let wobble = local_wave * (pressure + compression * 0.34) * height * 0.055 * end_taper;
+        let tail_pull = rebound * (t - 0.5) * height * 0.14;
         let half = (base_half
             + sine * height * (0.05 + compression * 0.05) * thickness_scale
             + if idx == RIBBON_POINTS - 1 {
@@ -295,9 +295,9 @@ fn ribbon_profile_with_offsets(
         .max(2.5);
         let y = center_y + arch + chain_arch + wobble + tail_pull;
         let cap_push = if idx == RIBBON_POINTS - 1 {
-            rebound.max(0.) * height * 0.16
+            rebound.max(0.) * height * 0.2
         } else if idx == 0 {
-            -rebound.max(0.) * height * 0.06
+            -rebound.max(0.) * height * 0.08
         } else {
             0.
         };

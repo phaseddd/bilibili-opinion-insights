@@ -41,7 +41,7 @@ pub struct JellySwitchConfig {
 
 pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
     let (track_w, track_h, thumb, text_size) = match config.size {
-        JellySwitchSize::Standard => (142., 52., 43., 12.),
+        JellySwitchSize::Standard => (118., 42., 33., 11.5),
         JellySwitchSize::Compact => (100., 36., 30., 11.),
     };
     let material = switch_material(config.tone, palette);
@@ -49,17 +49,17 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
     let progress = if config.checked { 1. } else { 0. };
     let endpoint = if config.checked { 1. } else { -1. };
     let active_wave = if config.active {
-        ((config.motion_tick as f32 * 0.34).sin().mul_add(0.5, 0.5)) * 0.18
+        ((config.motion_tick as f32 * 0.24).sin().mul_add(0.5, 0.5)) * 0.24
     } else {
         0.
     };
     let settle = config.motion.rebound;
-    let wiggle = (settle * 5.5 + config.motion.error_shake * 2.).clamp(-5.5, 5.5);
+    let wiggle = (settle * 7.4 + config.motion.error_shake * 2.4).clamp(-7.4, 7.4);
     let travel = track_w - thumb - 10.;
-    let thumb_left =
-        5. + travel * progress + endpoint as f32 * (config.motion.squash_x * 4. + settle * 3.);
-    let thumb_w = thumb + config.motion.squash_x * 9. + active_wave * 8.;
-    let thumb_h = thumb - config.motion.squash_y * 6. - active_wave * 3.;
+    let endpoint_pull = config.motion.squash_x * 5.8 + settle * 4.6;
+    let thumb_left = 5. + travel * progress + endpoint as f32 * endpoint_pull;
+    let thumb_w = thumb + config.motion.squash_x * 10.5 + active_wave * 7.5;
+    let thumb_h = thumb - config.motion.squash_y * 7. - active_wave * 3.6;
     let group_name = SharedString::from(config.group);
     let switch_image = config.image.clone();
     let has_switch_image = switch_image.is_some();
@@ -162,7 +162,7 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
                             .left(px(thumb_left + wiggle))
                             .top(px((track_h - thumb_h) * 0.5 + config.motion.pressure * 2.2))
                             .w(px(thumb_w))
-                            .h(px(thumb_h.max(24.)))
+                            .h(px(thumb_h.max(22.)))
                             .rounded(px(999.))
                             .border_1()
                             .border_color(
@@ -193,8 +193,8 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
                             ])
                             .group_active(group_name.clone(), |this| {
                                 this.top(px((track_h - thumb) * 0.5 + 4.))
-                                    .w(px(thumb + 7.))
-                                    .h(px(thumb - 6.))
+                                    .w(px(thumb + 8.))
+                                    .h(px(thumb - 6.5))
                             })
                             .child(top_specular_band(
                                 material,

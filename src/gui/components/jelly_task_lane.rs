@@ -158,13 +158,20 @@ fn jelly_lane_ribbon(
                         .opacity(0.18 + motion_snapshot.contact * 0.08),
                 );
                 if let Some(bitmap) = bitmap.clone() {
+                    let scale_x = (track_w - 4.) / bitmap.logical_width.max(1.);
+                    let scale_y = track_h / bitmap.logical_height.max(1.);
+                    let image_w = bitmap.width * scale_x;
+                    let image_h = bitmap.height * scale_y;
                     let bitmap_bounds = Bounds::new(
-                        point(px(origin_x + 2. + velocity_nudge), px(origin_y)),
-                        size(px(track_w - 4.), px(track_h)),
+                        point(
+                            px(origin_x + 2. + velocity_nudge + bitmap.origin.0 * scale_x),
+                            px(origin_y + bitmap.origin.1 * scale_y),
+                        ),
+                        size(px(image_w), px(image_h)),
                     );
                     let _ = window.paint_image(
                         bitmap_bounds,
-                        Corners::from(px(track_h * 0.5)),
+                        Corners::from(px(image_h * 0.5)),
                         bitmap.image,
                         0,
                         false,

@@ -81,13 +81,18 @@ pub(crate) fn rasterize_switch_material_bitmap(
     let track_top = request.height * 0.18 + pressure * request.height * 0.04;
     let track_bottom = request.height * 0.82 - pressure * request.height * 0.03;
     let track_radius = (track_bottom - track_top) * 0.5;
-    let thumb_diameter = request.height * 0.82 - pressure * request.height * 0.12 + squash_z * 2.;
+    let thumb_diameter = request.height * (0.8 + active_wave * 0.045)
+        - pressure * request.height * 0.12
+        + squash_z * request.height * 0.055;
     let thumb_radius = thumb_diameter * 0.5;
     let travel = (track_right - track_left - thumb_diameter).max(1.);
     let progress = if request.checked { 1. } else { 0. };
     let endpoint = if request.checked { 1. } else { -1. };
-    let thumb_left =
-        track_left + travel * progress + endpoint * (squash_x * 4. + rebound.max(0.) * 3.);
+    let endpoint_pull = squash_x * request.height * 0.14 + rebound.max(0.) * request.height * 0.11;
+    let thumb_left = track_left
+        + travel * progress
+        + endpoint * endpoint_pull
+        + request.motion.error_shake * request.height * 0.1;
     let thumb_top = (request.height - thumb_diameter) * 0.5 + pressure * 1.2 - rebound * 0.8;
 
     for row in 0..height {

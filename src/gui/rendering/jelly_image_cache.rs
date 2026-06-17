@@ -4,7 +4,7 @@ use std::sync::Arc;
 use gpui::RenderImage;
 
 use crate::gui::materials::{JellyMaterialToken, JellyTone};
-use crate::gui::motion::{JellyMotionSnapshot, JellyProgressMotionSnapshot};
+use crate::gui::motion::{JellyMotionSnapshot, JellyProgressMotionSnapshot, PROGRESS_CHAIN_POINTS};
 use crate::gui::rendering::jelly_bitmap::{
     JellyRibbonBitmapConfig, rasterize_ribbon_material_bitmap,
 };
@@ -25,6 +25,7 @@ use crate::gui::rendering::jelly_switch_bitmap::{
 };
 
 const MAX_CACHED_IMAGES: usize = 96;
+const PROGRESS_PHASE_STEPS: u8 = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum JellyProgressImageQuality {
@@ -45,6 +46,11 @@ pub(crate) enum JellyProgressImagePhase {
 #[derive(Clone)]
 pub(crate) struct JellyProgressImage {
     pub(crate) image: Arc<RenderImage>,
+    pub(crate) origin: (f32, f32),
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+    pub(crate) logical_width: f32,
+    pub(crate) logical_height: f32,
 }
 
 #[derive(Clone)]
@@ -132,6 +138,9 @@ struct JellyProgressImageKey {
     rebound_bucket: i8,
     contact_bucket: u8,
     phase_bucket: u8,
+    chain_front_bucket: i8,
+    chain_mid_bucket: i8,
+    chain_back_bucket: i8,
     phase: JellyProgressImagePhase,
     tone: JellyTone,
     quality: JellyProgressImageQuality,
@@ -208,7 +217,7 @@ struct JellySurfaceImageKey {
 
 #[derive(Default)]
 pub(crate) struct JellyImageCache {
-    progress_entries: VecDeque<(JellyProgressImageKey, Arc<RenderImage>)>,
+    progress_entries: VecDeque<(JellyProgressImageKey, JellyProgressImage)>,
     button_entries: VecDeque<(JellyButtonImageKey, Arc<RenderImage>)>,
     switch_entries: VecDeque<(JellySwitchImageKey, Arc<RenderImage>)>,
     capsule_entries: VecDeque<(JellyCapsuleImageKey, Arc<RenderImage>)>,
@@ -221,8 +230,8 @@ impl JellyImageCache {
         request: JellyProgressImageRequest,
     ) -> Option<JellyProgressImage> {
         let key = JellyProgressImageKey::from_motion(request)?;
-        if let Some(image) = lookup_image(&mut self.progress_entries, key) {
-            return Some(JellyProgressImage { image });
+        if let Some(image) = lookup_progress_image(&mut self.progress_entries, key) {
+            return Some(image);
         }
 
         let render_width = key.width_px as f32;
@@ -238,7 +247,8 @@ impl JellyImageCache {
                 pressure: key.pressure_bucket as f32 / 8.,
                 rebound: key.rebound_bucket as f32 / 8.,
                 compression: key.contact_bucket as f32 / 8.,
-                phase: key.phase_bucket as f32 / 15. * std::f32::consts::TAU,
+                phase: key.phase_bucket as f32 / PROGRESS_PHASE_STEPS as f32
+                    * std::f32::consts::TAU,
             },
             chain: request.motion.chain,
         };
@@ -254,10 +264,20 @@ impl JellyImageCache {
                 ..JellyRibbonBitmapConfig::default()
             },
         );
-        let image = bitmap.to_gpui_render_image()?;
+        let origin = bitmap.origin;
+        let bitmap_width = bitmap.width as f32 * bitmap.pixel_size;
+        let bitmap_height = bitmap.height as f32 * bitmap.pixel_size;
+        let image = JellyProgressImage {
+            image: bitmap.to_gpui_render_image()?,
+            origin,
+            width: bitmap_width,
+            height: bitmap_height,
+            logical_width: render_width,
+            logical_height: render_height,
+        };
 
-        insert_image(&mut self.progress_entries, key, image.clone());
-        Some(JellyProgressImage { image })
+        insert_progress_image(&mut self.progress_entries, key, image.clone());
+        Some(image)
     }
 
     pub(crate) fn button_image(
@@ -423,6 +443,7 @@ impl JellyProgressImageKey {
     fn from_motion(request: JellyProgressImageRequest) -> Option<Self> {
         let width_px = quantize_dimension(request.width, 4., 48., 1800.)?;
         let height_px = quantize_dimension(request.height, 2., 18., 120.)?;
+        let chain = request.motion.chain.offsets;
 
         Some(Self {
             width_px,
@@ -431,7 +452,10 @@ impl JellyProgressImageKey {
             pressure_bucket: quantize_unit(request.motion.pressure, 8) as u8,
             rebound_bucket: quantize_signed(request.motion.rebound, 8),
             contact_bucket: quantize_unit(request.motion.contact, 8) as u8,
-            phase_bucket: quantize_unit(request.motion.gloss_phase, 15) as u8,
+            phase_bucket: quantize_unit(request.motion.gloss_phase, PROGRESS_PHASE_STEPS) as u8,
+            chain_front_bucket: quantize_signed(chain[PROGRESS_CHAIN_POINTS / 4], 5),
+            chain_mid_bucket: quantize_signed(chain[PROGRESS_CHAIN_POINTS / 2], 5),
+            chain_back_bucket: quantize_signed(chain[PROGRESS_CHAIN_POINTS * 3 / 4], 5),
             phase: request.phase,
             tone: request.tone,
             quality: request.quality,
@@ -544,7 +568,30 @@ fn lookup_image<K: Copy + Eq>(
     Some(image)
 }
 
+fn lookup_progress_image(
+    entries: &mut VecDeque<(JellyProgressImageKey, JellyProgressImage)>,
+    key: JellyProgressImageKey,
+) -> Option<JellyProgressImage> {
+    let index = entries
+        .iter()
+        .position(|(entry_key, _)| *entry_key == key)?;
+    let (_, image) = entries.remove(index)?;
+    entries.push_back((key, image.clone()));
+    Some(image)
+}
+
 fn insert_image<K>(entries: &mut VecDeque<(K, Arc<RenderImage>)>, key: K, image: Arc<RenderImage>) {
+    if entries.len() >= MAX_CACHED_IMAGES {
+        entries.pop_front();
+    }
+    entries.push_back((key, image));
+}
+
+fn insert_progress_image(
+    entries: &mut VecDeque<(JellyProgressImageKey, JellyProgressImage)>,
+    key: JellyProgressImageKey,
+    image: JellyProgressImage,
+) {
     if entries.len() >= MAX_CACHED_IMAGES {
         entries.pop_front();
     }
@@ -562,7 +609,7 @@ impl JellyProgressImageQuality {
     fn render_config(self, render_height: f32) -> JellyImageRenderConfig {
         match self {
             Self::Main => JellyImageRenderConfig {
-                pixel_size: 1.25,
+                pixel_size: 1.35,
                 padding: render_height * 0.34,
                 opacity: 0.98,
             },

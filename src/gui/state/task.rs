@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::app::events::CollectionEvent;
 use crate::gui::motion::{
-    JellyProgressMotionSnapshot, JellyProgressMotionState, ProgressMotionPhase,
+    JellyProgressMotionSnapshot, JellyProgressMotionState, ProgressMotionPhase, VISUAL_MOTION_DT,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -108,7 +108,9 @@ impl ProgressState {
 
     pub(crate) fn tick_visual_motion(&mut self, phase: TaskPhase) -> bool {
         self.motion.set_target_percent(self.target_percent);
-        let active = self.motion.tick(progress_motion_phase(phase));
+        let active = self
+            .motion
+            .tick(progress_motion_phase(phase), VISUAL_MOTION_DT);
         self.display_percent = self.motion.display_percent();
         active || self.has_active_visual_motion(phase)
     }
@@ -566,7 +568,9 @@ impl TaskLane {
 
     fn tick_visual_motion(&mut self) -> bool {
         self.motion.set_target_percent(self.target_percent);
-        let active = self.motion.tick(task_lane_motion_phase(self.phase));
+        let active = self
+            .motion
+            .tick(task_lane_motion_phase(self.phase), VISUAL_MOTION_DT);
         self.display_percent = self.motion.display_percent();
         active || self.has_active_visual_motion()
     }

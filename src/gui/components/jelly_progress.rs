@@ -82,7 +82,7 @@ pub fn jelly_progress(
                             let track_h = f32::from(bounds.size.height);
                             let track_w = f32::from(bounds.size.width);
                             let outer = jelly_round_rect(shape);
-                            let shell_color = token.shell_start.opacity(0.12 + pulse * 0.08);
+                            let shell_color = token.shell_start.opacity(0.14 + pulse * 0.1);
                             window.paint_path(outer, shell_color);
 
                             let shell_outline = jelly_round_rect(JellyPathShape {
@@ -102,7 +102,7 @@ pub fn jelly_progress(
                                 shell_outline,
                                 token
                                     .rim
-                                    .opacity(0.12 + motion_snapshot.rim_pressure * 0.14),
+                                    .opacity(0.16 + motion_snapshot.rim_pressure * 0.18),
                             );
 
                             let ribbon_shape = JellyRibbonShape {
@@ -125,17 +125,27 @@ pub fn jelly_progress(
                                 ribbon_shadow,
                                 token
                                     .contact_shadow
-                                    .opacity(0.2 + motion_snapshot.contact * 0.09),
+                                    .opacity(0.22 + motion_snapshot.contact * 0.12),
                             );
 
                             if let Some(bitmap) = bitmap.clone() {
+                                let scale_x = (track_w - 6.) / bitmap.logical_width.max(1.);
+                                let scale_y = track_h / bitmap.logical_height.max(1.);
+                                let image_w = bitmap.width * scale_x;
+                                let image_h = bitmap.height * scale_y;
                                 let bitmap_bounds = Bounds::new(
-                                    point(px(origin_x + 3. + velocity_nudge), px(origin_y)),
-                                    size(px(track_w - 6.), px(track_h)),
+                                    point(
+                                        px(origin_x
+                                            + 3.
+                                            + velocity_nudge
+                                            + bitmap.origin.0 * scale_x),
+                                        px(origin_y + bitmap.origin.1 * scale_y),
+                                    ),
+                                    size(px(image_w), px(image_h)),
                                 );
                                 let _ = window.paint_image(
                                     bitmap_bounds,
-                                    Corners::from(px(track_h * 0.5)),
+                                    Corners::from(px(image_h * 0.5)),
                                     bitmap.image,
                                     0,
                                     false,
@@ -151,7 +161,7 @@ pub fn jelly_progress(
                             let ribbon_highlight = jelly_chained_ribbon_highlight(chained_shape);
                             window.paint_path(
                                 ribbon_highlight,
-                                token.specular.opacity(0.16 + pulse * 0.14),
+                                token.specular.opacity(0.22 + pulse * 0.18),
                             );
 
                             let inner_width = (track_w * fill).max(track_h * 0.34 + 18.);
@@ -170,7 +180,7 @@ pub fn jelly_progress(
                             };
                             let fill_path = jelly_round_rect(inner_shape);
                             window
-                                .paint_path(fill_path, token.core_top.opacity(0.44 + pulse * 0.12));
+                                .paint_path(fill_path, token.core_top.opacity(0.52 + pulse * 0.16));
                         },
                     )
                     .absolute()
