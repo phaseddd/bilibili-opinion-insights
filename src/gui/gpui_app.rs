@@ -56,8 +56,8 @@ use crate::gui::views::auth_gate::{
     qr_lifecycle_card, qr_stage, session_capsule,
 };
 use crate::gui::views::primitives::{
-    form_section, metric_chip, option_group, panel, panel_title, phase_kind, product_mark,
-    progress_visual_phase, status_capsule, status_dot, validation_box,
+    form_section, jelly_form_field, metric_chip, option_group, panel, panel_title, phase_kind,
+    product_mark, progress_visual_phase, status_capsule, status_dot, validation_box,
 };
 use crate::gui::views::workbench_widgets::{empty_result_state, failure_row, result_row};
 use crate::gui::workers::auth_worker::{
@@ -1435,6 +1435,13 @@ impl BiliOpinionGui {
                 motion: jsonl_motion,
             },
         );
+        let task_active = self.task.phase.is_busy();
+        let bvids_field_image =
+            self.form_surface_image(palette, JellyTone::Primary, 420., 150., task_active);
+        let cookie_field_image =
+            self.form_surface_image(palette, JellyTone::Neutral, 420., 50., false);
+        let output_field_image =
+            self.form_surface_image(palette, JellyTone::Output, 420., 50., task_active);
 
         panel(palette)
             .w(relative(0.3))
@@ -1448,19 +1455,49 @@ impl BiliOpinionGui {
             .child(form_section(
                 "视频列表",
                 "支持 BVID 或完整视频链接，每行一个。",
-                Input::new(&self.form.bvids_input).h(px(138.)),
+                jelly_form_field(
+                    Input::new(&self.form.bvids_input)
+                        .h_full()
+                        .appearance(false)
+                        .bordered(false)
+                        .focus_bordered(false),
+                    palette,
+                    bvids_field_image,
+                    150.,
+                    JellyTone::Primary,
+                ),
                 palette,
             ))
             .child(form_section(
                 "Cookie 文件",
                 "工作台默认继承身份入口状态；这里仍可填写显式 cookie 文件供采集使用。",
-                Input::new(&self.form.cookie_input).cleanable(true),
+                jelly_form_field(
+                    Input::new(&self.form.cookie_input)
+                        .cleanable(true)
+                        .appearance(false)
+                        .bordered(false)
+                        .focus_bordered(false),
+                    palette,
+                    cookie_field_image,
+                    50.,
+                    JellyTone::Neutral,
+                ),
                 palette,
             ))
             .child(form_section(
                 "输出目录",
                 "当前写入本地目录，复跑会跳过已存在记录。",
-                Input::new(&self.form.output_input).cleanable(true),
+                jelly_form_field(
+                    Input::new(&self.form.output_input)
+                        .cleanable(true)
+                        .appearance(false)
+                        .bordered(false)
+                        .focus_bordered(false),
+                    palette,
+                    output_field_image,
+                    50.,
+                    JellyTone::Output,
+                ),
                 palette,
             ))
             .child(self.render_auth_strip(palette))
@@ -1860,10 +1897,40 @@ impl BiliOpinionGui {
         )
     }
 
+    fn form_surface_image(
+        &mut self,
+        palette: &Palette,
+        tone: JellyTone,
+        width: f32,
+        height: f32,
+        active: bool,
+    ) -> Option<JellySurfaceImage> {
+        self.surface_image_for_tone(
+            palette,
+            tone,
+            JellySurfaceDensity::Result,
+            width,
+            height,
+            active,
+        )
+    }
+
     fn surface_image_for_kind(
         &mut self,
         palette: &Palette,
         kind: EventKind,
+        density: JellySurfaceDensity,
+        width: f32,
+        height: f32,
+        active: bool,
+    ) -> Option<JellySurfaceImage> {
+        self.surface_image_for_tone(palette, event_tone(kind), density, width, height, active)
+    }
+
+    fn surface_image_for_tone(
+        &mut self,
+        palette: &Palette,
+        tone: JellyTone,
         density: JellySurfaceDensity,
         width: f32,
         height: f32,
@@ -1888,8 +1955,8 @@ impl BiliOpinionGui {
                     aura: if active { 0.18 } else { 0.08 },
                     error_shake: 0.,
                 },
-                tone: event_tone(kind),
-                material: JellyMaterialToken::for_event(kind, palette),
+                tone,
+                material: JellyMaterialToken::for_tone(tone, palette),
                 density,
                 active,
             })

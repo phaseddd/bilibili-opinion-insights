@@ -5,7 +5,7 @@ use gpui::{
 use gpui_component::{h_flex, v_flex};
 
 use crate::gui::components::jelly_progress::JellyProgressPhase;
-use crate::gui::materials::JellyMaterialToken;
+use crate::gui::materials::{JellyMaterialToken, JellyTone};
 use crate::gui::rendering::jelly_image_cache::{JellyCapsuleImage, JellySurfaceImage};
 use crate::gui::state::events::EventKind;
 use crate::gui::state::task::TaskPhase;
@@ -58,6 +58,84 @@ pub(crate) fn form_section(
                 .text_color(palette.muted)
                 .line_height(relative(1.25))
                 .child(helper),
+        )
+}
+
+pub(crate) fn jelly_form_field(
+    input: impl IntoElement,
+    palette: &Palette,
+    image: Option<JellySurfaceImage>,
+    height: f32,
+    tone: JellyTone,
+) -> impl IntoElement {
+    let material = JellyMaterialToken::for_tone(tone, palette);
+    let has_image = image.is_some();
+    let border_alpha = if has_image { 0.2 } else { 0.24 };
+    let backing_alpha = if has_image { 0.025 } else { 0.07 };
+    let shadow_alpha = if has_image { 0.06 } else { 0.08 };
+
+    let field = div()
+        .relative()
+        .w_full()
+        .h(px(height))
+        .p(px(4.))
+        .rounded(px(12.))
+        .overflow_hidden()
+        .border_1()
+        .border_color(material.rim.opacity(border_alpha))
+        .bg(linear_gradient(
+            135.,
+            linear_color_stop(material.shell_start.opacity(backing_alpha), 0.0),
+            linear_color_stop(material.shell_end.opacity(backing_alpha + 0.025), 1.0),
+        ))
+        .shadow(vec![gpui::BoxShadow {
+            color: material.state_aura.opacity(shadow_alpha),
+            offset: gpui::point(px(0.), px(6.)),
+            blur_radius: px(16.),
+            spread_radius: px(-10.),
+        }]);
+
+    let field = if let Some(image) = image {
+        field.child(surface_background(image, 12.))
+    } else {
+        field
+    };
+
+    field
+        .child(
+            div()
+                .absolute()
+                .left(px(12.))
+                .right(px(16.))
+                .top(px(5.))
+                .h(px(2.))
+                .rounded(px(999.))
+                .bg(material
+                    .specular
+                    .opacity(if has_image { 0.24 } else { 0.18 })),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(8.))
+                .right(px(8.))
+                .bottom(px(3.))
+                .h(px((height * 0.24).clamp(10., 22.)))
+                .rounded(px(999.))
+                .bg(material
+                    .contact_shadow
+                    .opacity(if has_image { 0.07 } else { 0.1 })),
+        )
+        .child(
+            div()
+                .relative()
+                .size_full()
+                .rounded(px(9.))
+                .overflow_hidden()
+                .bg(material
+                    .core_top
+                    .opacity(if has_image { 0.08 } else { 0.14 }))
+                .child(input),
         )
 }
 
@@ -348,6 +426,31 @@ pub(crate) fn status_capsule(
                     .child(label),
             )
     }
+}
+
+fn surface_background(image: JellySurfaceImage, radius: f32) -> impl IntoElement {
+    canvas(
+        move |_, _window: &mut Window, _cx| (),
+        move |bounds, _, window: &mut Window, _cx| {
+            let origin_x = f32::from(bounds.origin.x);
+            let origin_y = f32::from(bounds.origin.y);
+            let width = f32::from(bounds.size.width);
+            let height = f32::from(bounds.size.height);
+            let image_bounds = Bounds::new(
+                point(px(origin_x), px(origin_y)),
+                size(px(width), px(height)),
+            );
+            let _ = window.paint_image(
+                image_bounds,
+                Corners::from(px(radius)),
+                image.image.clone(),
+                0,
+                false,
+            );
+        },
+    )
+    .absolute()
+    .inset_0()
 }
 
 pub(crate) fn product_mark(palette: &Palette) -> impl IntoElement {
