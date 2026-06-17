@@ -4,7 +4,10 @@ use std::sync::Arc;
 use gpui::RenderImage;
 
 use crate::gui::materials::{JellyMaterialToken, JellyTone};
-use crate::gui::motion::{JellyMotionSnapshot, JellyProgressMotionSnapshot, PROGRESS_CHAIN_POINTS};
+use crate::gui::motion::{
+    JellyMotionSnapshot, JellyProgressMotionSnapshot, JellySwitchMotionSnapshot,
+    PROGRESS_CHAIN_POINTS,
+};
 use crate::gui::rendering::jelly_bitmap::{
     JellyRibbonBitmapConfig, rasterize_ribbon_material_bitmap,
 };
@@ -99,7 +102,7 @@ pub(crate) struct JellyButtonImageRequest {
 pub(crate) struct JellySwitchImageRequest {
     pub(crate) width: f32,
     pub(crate) height: f32,
-    pub(crate) motion: JellyMotionSnapshot,
+    pub(crate) motion: JellySwitchMotionSnapshot,
     pub(crate) tone: JellyTone,
     pub(crate) material: JellyMaterialToken,
     pub(crate) checked: bool,
@@ -168,6 +171,7 @@ struct JellyButtonImageKey {
 struct JellySwitchImageKey {
     width_px: u16,
     height_px: u16,
+    progress_bucket: u8,
     pressure_bucket: u8,
     rebound_bucket: i8,
     squash_x_bucket: u8,
@@ -333,7 +337,9 @@ impl JellyImageCache {
             height: render_height,
             pixel_size: if render_height >= 46. { 1.3 } else { 1.45 },
             material: request.material,
-            motion: JellyMotionSnapshot {
+            motion: JellySwitchMotionSnapshot {
+                progress: key.progress_bucket as f32 / 32.,
+                velocity: request.motion.velocity,
                 pressure: key.pressure_bucket as f32 / 10.,
                 rebound: key.rebound_bucket as f32 / 10.,
                 squash_x: key.squash_x_bucket as f32 / 10.,
@@ -344,6 +350,7 @@ impl JellyImageCache {
                 contact: key.contact_bucket as f32 / 10.,
                 aura: key.aura_bucket as f32 / 10.,
                 error_shake: request.motion.error_shake,
+                wiggle_x: request.motion.wiggle_x,
             },
             checked: key.checked,
             enabled: key.enabled,
@@ -495,6 +502,7 @@ impl JellySwitchImageKey {
         Some(Self {
             width_px,
             height_px,
+            progress_bucket: quantize_unit(request.motion.progress, 32) as u8,
             pressure_bucket: quantize_unit(request.motion.pressure, 10) as u8,
             rebound_bucket: quantize_signed(request.motion.rebound, 10),
             squash_x_bucket: quantize_unit(request.motion.squash_x, 10) as u8,
@@ -646,6 +654,7 @@ mod tests {
     use crate::gui::materials::{JellyMaterialToken, JellyTone};
     use crate::gui::motion::{
         JellyMotionSnapshot, JellyProgressChainSnapshot, JellyProgressMotionSnapshot,
+        JellySwitchMotionSnapshot,
     };
     use crate::gui::theme::Palette;
 
@@ -837,7 +846,7 @@ mod tests {
             .switch_image(sample_switch_request(
                 142.,
                 52.,
-                sample_button_motion(0.21),
+                sample_switch_motion(1., 0.21),
                 material,
                 true,
             ))
@@ -846,7 +855,7 @@ mod tests {
             .switch_image(sample_switch_request(
                 142.4,
                 52.2,
-                sample_button_motion(0.22),
+                sample_switch_motion(1., 0.22),
                 material,
                 true,
             ))
@@ -864,7 +873,7 @@ mod tests {
         cache.switch_image(sample_switch_request(
             142.,
             52.,
-            sample_button_motion(0.2),
+            sample_switch_motion(1., 0.2),
             JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
             true,
         ));
@@ -873,7 +882,7 @@ mod tests {
             ..sample_switch_request(
                 142.,
                 52.,
-                sample_button_motion(0.2),
+                sample_switch_motion(0., 0.2),
                 JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
                 true,
             )
@@ -884,7 +893,7 @@ mod tests {
             ..sample_switch_request(
                 142.,
                 52.,
-                sample_button_motion(0.2),
+                sample_switch_motion(1., 0.2),
                 JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
                 true,
             )
@@ -894,13 +903,37 @@ mod tests {
             ..sample_switch_request(
                 142.,
                 52.,
-                sample_button_motion(0.2),
+                sample_switch_motion(1., 0.2),
                 JellyMaterialToken::for_tone(JellyTone::Primary, &palette),
                 true,
             )
         });
 
         assert_eq!(cache.len(), 4);
+    }
+
+    #[test]
+    fn switch_image_cache_splits_progress_buckets() {
+        let mut cache = JellyImageCache::default();
+        let palette = Palette::default();
+        let material = JellyMaterialToken::for_tone(JellyTone::Primary, &palette);
+
+        cache.switch_image(sample_switch_request(
+            142.,
+            52.,
+            sample_switch_motion(0.25, 0.2),
+            material,
+            true,
+        ));
+        cache.switch_image(sample_switch_request(
+            142.,
+            52.,
+            sample_switch_motion(0.75, 0.2),
+            material,
+            true,
+        ));
+
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]
@@ -1120,7 +1153,7 @@ mod tests {
     fn sample_switch_request(
         width: f32,
         height: f32,
-        motion: JellyMotionSnapshot,
+        motion: JellySwitchMotionSnapshot,
         material: JellyMaterialToken,
         checked: bool,
     ) -> JellySwitchImageRequest {
@@ -1133,6 +1166,24 @@ mod tests {
             checked,
             enabled: true,
             active: checked,
+        }
+    }
+
+    fn sample_switch_motion(progress: f32, pressure: f32) -> JellySwitchMotionSnapshot {
+        JellySwitchMotionSnapshot {
+            progress,
+            velocity: pressure * 2.,
+            pressure,
+            rebound: pressure * 0.2,
+            squash_x: pressure * 0.4,
+            squash_y: pressure * 0.3,
+            rim_pressure: 0.25 + pressure * 0.2,
+            gloss_phase: 0.36,
+            inner_lag: pressure * 0.25,
+            contact: 0.2 + pressure * 0.4,
+            aura: 0.2,
+            error_shake: 0.,
+            wiggle_x: pressure * 0.25,
         }
     }
 

@@ -5,7 +5,7 @@ use image::{Frame, ImageBuffer, RgbaImage};
 use smallvec::SmallVec;
 
 use crate::gui::materials::JellyMaterialToken;
-use crate::gui::motion::JellyMotionSnapshot;
+use crate::gui::motion::JellySwitchMotionSnapshot;
 
 const BYTES_PER_PIXEL: usize = 4;
 
@@ -15,7 +15,7 @@ pub(crate) struct JellySwitchBitmapRequest {
     pub(crate) height: f32,
     pub(crate) pixel_size: f32,
     pub(crate) material: JellyMaterialToken,
-    pub(crate) motion: JellyMotionSnapshot,
+    pub(crate) motion: JellySwitchMotionSnapshot,
     pub(crate) checked: bool,
     pub(crate) enabled: bool,
     pub(crate) active: bool,
@@ -86,12 +86,13 @@ pub(crate) fn rasterize_switch_material_bitmap(
         + squash_z * request.height * 0.055;
     let thumb_radius = thumb_diameter * 0.5;
     let travel = (track_right - track_left - thumb_diameter).max(1.);
-    let progress = if request.checked { 1. } else { 0. };
+    let progress = request.motion.progress.clamp(0., 1.);
     let endpoint = if request.checked { 1. } else { -1. };
     let endpoint_pull = squash_x * request.height * 0.14 + rebound.max(0.) * request.height * 0.11;
     let thumb_left = track_left
         + travel * progress
         + endpoint * endpoint_pull
+        + request.motion.wiggle_x * request.height * 0.045
         + request.motion.error_shake * request.height * 0.1;
     let thumb_top = (request.height - thumb_diameter) * 0.5 + pressure * 1.2 - rebound * 0.8;
 
@@ -433,7 +434,7 @@ fn lerp(start: f32, end: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use crate::gui::materials::{JellyMaterialToken, JellyTone};
-    use crate::gui::motion::JellyMotionSnapshot;
+    use crate::gui::motion::JellySwitchMotionSnapshot;
     use crate::gui::theme::Palette;
 
     use super::{BYTES_PER_PIXEL, JellySwitchBitmapRequest, rasterize_switch_material_bitmap};
@@ -464,11 +465,12 @@ mod tests {
 
     #[test]
     fn pressed_switch_bitmap_changes_contact_shadow() {
-        let idle = sample_bitmap_with_motion(false, false, JellyMotionSnapshot::default());
+        let idle = sample_bitmap_with_motion(false, false, JellySwitchMotionSnapshot::default());
         let active = sample_bitmap_with_motion(
             true,
             true,
-            JellyMotionSnapshot {
+            JellySwitchMotionSnapshot {
+                progress: 1.,
                 pressure: 0.72,
                 rebound: 0.2,
                 squash_x: 0.45,
@@ -479,6 +481,8 @@ mod tests {
                 contact: 0.68,
                 aura: 0.24,
                 error_shake: 0.,
+                velocity: 0.,
+                wiggle_x: 0.,
             },
         );
         let idle_bottom = average_alpha(&idle, idle.height * 2 / 3, idle.height);
@@ -503,7 +507,8 @@ mod tests {
         sample_bitmap_with_motion(
             checked,
             true,
-            JellyMotionSnapshot {
+            JellySwitchMotionSnapshot {
+                progress: if checked { 1. } else { 0. },
                 pressure: if checked { 0.72 } else { 0.12 },
                 rebound: if checked { 0.18 } else { -0.08 },
                 squash_x: if checked { 0.42 } else { 0.12 },
@@ -514,6 +519,8 @@ mod tests {
                 contact: if checked { 0.68 } else { 0.2 },
                 aura: 0.24,
                 error_shake: 0.,
+                velocity: 0.,
+                wiggle_x: 0.,
             },
         )
     }
@@ -521,7 +528,7 @@ mod tests {
     fn sample_bitmap_with_motion(
         checked: bool,
         enabled: bool,
-        motion: JellyMotionSnapshot,
+        motion: JellySwitchMotionSnapshot,
     ) -> super::JellySwitchBitmap {
         rasterize_switch_material_bitmap(JellySwitchBitmapRequest {
             width: 142.,

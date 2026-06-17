@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::app::events::CollectionEvent;
 use crate::gui::motion::{
-    JellyProgressMotionSnapshot, JellyProgressMotionState, ProgressMotionPhase, VISUAL_MOTION_DT,
+    JellyProgressMotionSnapshot, JellyProgressMotionState, ProgressMotionPhase,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -106,11 +106,9 @@ impl ProgressState {
         self.motion.reset_to(percent);
     }
 
-    pub(crate) fn tick_visual_motion(&mut self, phase: TaskPhase) -> bool {
+    pub(crate) fn tick_visual_motion(&mut self, phase: TaskPhase, dt: f32) -> bool {
         self.motion.set_target_percent(self.target_percent);
-        let active = self
-            .motion
-            .tick(progress_motion_phase(phase), VISUAL_MOTION_DT);
+        let active = self.motion.tick(progress_motion_phase(phase), dt);
         self.display_percent = self.motion.display_percent();
         active || self.has_active_visual_motion(phase)
     }
@@ -332,10 +330,10 @@ impl TaskState {
         }
     }
 
-    pub(crate) fn tick_visual_motion(&mut self) -> bool {
-        let mut active = self.progress.tick_visual_motion(self.phase);
+    pub(crate) fn tick_visual_motion(&mut self, dt: f32) -> bool {
+        let mut active = self.progress.tick_visual_motion(self.phase, dt);
         for lane in &mut self.lanes {
-            active |= lane.tick_visual_motion();
+            active |= lane.tick_visual_motion(dt);
         }
         active
     }
@@ -568,11 +566,9 @@ impl TaskLane {
             .trigger_phase_pulse(ProgressMotionPhase::Cancelling);
     }
 
-    fn tick_visual_motion(&mut self) -> bool {
+    fn tick_visual_motion(&mut self, dt: f32) -> bool {
         self.motion.set_target_percent(self.target_percent);
-        let active = self
-            .motion
-            .tick(task_lane_motion_phase(self.phase), VISUAL_MOTION_DT);
+        let active = self.motion.tick(task_lane_motion_phase(self.phase), dt);
         self.display_percent = self.motion.display_percent();
         active || self.has_active_visual_motion()
     }
@@ -652,6 +648,7 @@ fn output_label(output_ready: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use crate::app::events::CollectionEvent;
+    use crate::gui::motion::VISUAL_MOTION_DT;
 
     use super::{
         ProgressState, RunSummary, TaskLaneKind, TaskLanePhase, TaskPhase, TaskState,
@@ -689,7 +686,7 @@ mod tests {
         progress.set_target_percent(100.);
         assert_eq!(progress.display_percent, 0.);
 
-        progress.tick_visual_motion(TaskPhase::Running);
+        progress.tick_visual_motion(TaskPhase::Running, VISUAL_MOTION_DT);
 
         assert!(progress.display_percent > 0.);
         assert!(progress.display_percent < 100.);
@@ -742,7 +739,7 @@ mod tests {
             records_scanned: 40,
             records_appended: 12,
         });
-        task.tick_visual_motion();
+        task.tick_visual_motion(VISUAL_MOTION_DT);
 
         let lane = task
             .lanes

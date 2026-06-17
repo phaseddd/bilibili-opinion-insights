@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
     App, AppContext as _, Application, Bounds, ClickEvent, Context, Entity, FontWeight,
@@ -34,7 +34,9 @@ use crate::gui::components::jelly_switch::{
 use crate::gui::components::jelly_task_lane::{jelly_task_lane, jelly_task_lane_tone};
 use crate::gui::materials::{JellyMaterialToken, JellyTone};
 use crate::gui::messages::{AuthMessage, GuiMessage};
-use crate::gui::motion::{JellyMotionSnapshot, VISUAL_MOTION_TICK_MS, wave_between};
+use crate::gui::motion::{
+    JellyMotionSnapshot, JellySwitchMotionSnapshot, VISUAL_MOTION_TICK_MS, wave_between,
+};
 use crate::gui::rendering::jelly_image_cache::{
     JellyButtonImage, JellyButtonImageRequest, JellyCapsuleImage, JellyCapsuleImageRequest,
     JellyProgressImagePhase, JellyProgressImageQuality, JellyProgressImageRequest,
@@ -119,7 +121,7 @@ struct SwitchImageConfig {
     enabled: bool,
     active: bool,
     size: JellySwitchSize,
-    motion: JellyMotionSnapshot,
+    motion: JellySwitchMotionSnapshot,
 }
 
 impl BiliOpinionGui {
@@ -267,15 +269,21 @@ impl BiliOpinionGui {
 
         self.visual.motion_loop_running = true;
         cx.spawn(async move |view, cx| {
+            let mut last_frame = Instant::now();
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(VISUAL_MOTION_TICK_MS))
                     .await;
 
+                let now = Instant::now();
+                let dt = now.duration_since(last_frame).as_secs_f32();
+                last_frame = now;
+
                 let keep_running = match view.update(cx, |view, cx| {
                     if view.should_animate_visuals() {
                         view.visual.motion_tick = view.visual.motion_tick.wrapping_add(1);
-                        view.task.tick_visual_motion();
+                        view.task.tick_visual_motion(dt);
+                        view.visual.tick_switch_motion(dt);
                         cx.notify();
                         true
                     } else {
@@ -680,7 +688,7 @@ impl BiliOpinionGui {
             return;
         }
         self.form.collect_comments = !self.form.collect_comments;
-        self.visual.trigger_switch(101);
+        self.visual.toggle_switch(101, self.form.collect_comments);
         self.ensure_motion_loop(cx);
         cx.notify();
     }
@@ -690,7 +698,7 @@ impl BiliOpinionGui {
             return;
         }
         self.form.collect_danmaku = !self.form.collect_danmaku;
-        self.visual.trigger_switch(102);
+        self.visual.toggle_switch(102, self.form.collect_danmaku);
         self.ensure_motion_loop(cx);
         cx.notify();
     }
@@ -700,7 +708,7 @@ impl BiliOpinionGui {
             return;
         }
         self.form.write_csv = !self.form.write_csv;
-        self.visual.trigger_switch(103);
+        self.visual.toggle_switch(103, self.form.write_csv);
         self.ensure_motion_loop(cx);
         cx.notify();
     }
@@ -710,7 +718,7 @@ impl BiliOpinionGui {
             return;
         }
         self.form.write_jsonl = !self.form.write_jsonl;
-        self.visual.trigger_switch(104);
+        self.visual.toggle_switch(104, self.form.write_jsonl);
         self.ensure_motion_loop(cx);
         cx.notify();
     }
@@ -1390,10 +1398,18 @@ impl BiliOpinionGui {
         let danmaku_active = self.task.phase.is_busy() && self.form.collect_danmaku;
         let csv_active = self.task.phase.is_busy() && self.form.write_csv;
         let jsonl_active = self.task.phase.is_busy() && self.form.write_jsonl;
-        let comments_motion = self.visual.switch_motion(101, comments_active);
-        let danmaku_motion = self.visual.switch_motion(102, danmaku_active);
-        let csv_motion = self.visual.switch_motion(103, csv_active);
-        let jsonl_motion = self.visual.switch_motion(104, jsonl_active);
+        let comments_motion =
+            self.visual
+                .switch_motion(101, self.form.collect_comments, comments_active);
+        let danmaku_motion =
+            self.visual
+                .switch_motion(102, self.form.collect_danmaku, danmaku_active);
+        let csv_motion = self
+            .visual
+            .switch_motion(103, self.form.write_csv, csv_active);
+        let jsonl_motion = self
+            .visual
+            .switch_motion(104, self.form.write_jsonl, jsonl_active);
         let comments_image = self.switch_image(
             palette,
             SwitchImageConfig {

@@ -1,10 +1,14 @@
 use std::f32::consts::TAU;
 
 pub const PROGRESS_CHAIN_POINTS: usize = 9;
-pub const VISUAL_MOTION_TICK_MS: u64 = 24;
-pub const VISUAL_MOTION_DT: f32 = 0.024;
+pub const VISUAL_MOTION_TICK_MS: u64 = 8;
+pub const VISUAL_MOTION_DT: f32 = VISUAL_MOTION_TICK_MS as f32 / 1000.;
 
 const REFERENCE_MOTION_DT: f32 = 0.072;
+const CONTROL_IMPULSE_SECONDS: f32 = 0.52;
+const SWITCH_ACCELERATION: f32 = 34.;
+const SWITCH_MAX_VELOCITY: f32 = 5.8;
+const SWITCH_ENDPOINT_EPS: f32 = 0.04;
 
 #[derive(Clone, Copy, Debug)]
 pub struct SpringToken {
@@ -135,7 +139,8 @@ impl JellyMotionSnapshot {
             };
         };
 
-        let t = (age_ticks as f32 / 22.).clamp(0., 1.);
+        let impulse_ticks = (CONTROL_IMPULSE_SECONDS / VISUAL_MOTION_DT).max(1.);
+        let t = (age_ticks as f32 / impulse_ticks).clamp(0., 1.);
         let decay = (1. - t).powf(1.8);
         let oscillation = (t * TAU * 1.42).sin();
         let rebound = (oscillation * decay).clamp(-0.55, 1.);
@@ -164,6 +169,203 @@ impl JellyMotionSnapshot {
             && self.squash_x.abs() < 0.01
             && self.squash_y.abs() < 0.01
             && self.error_shake.abs() < 0.01
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct JellySwitchMotionState {
+    target: bool,
+    progress: f32,
+    velocity: f32,
+    squash_x: SpringValue,
+    squash_z: SpringValue,
+    wiggle_x: SpringValue,
+    pressed_impulse: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct JellySwitchMotionSnapshot {
+    pub progress: f32,
+    pub velocity: f32,
+    pub pressure: f32,
+    pub rebound: f32,
+    pub squash_x: f32,
+    pub squash_y: f32,
+    pub rim_pressure: f32,
+    pub gloss_phase: f32,
+    pub inner_lag: f32,
+    pub contact: f32,
+    pub aura: f32,
+    pub error_shake: f32,
+    pub wiggle_x: f32,
+}
+
+impl JellySwitchMotionState {
+    pub fn new(checked: bool) -> Self {
+        let squash_token = JellyMotionTokens::default().switch_squash;
+        Self {
+            target: checked,
+            progress: if checked { 1. } else { 0. },
+            velocity: 0.,
+            squash_x: SpringValue::new(0., squash_token),
+            squash_z: SpringValue::new(0., squash_token),
+            wiggle_x: SpringValue::new(0., squash_token),
+            pressed_impulse: 0.,
+        }
+    }
+
+    pub fn target(&self) -> bool {
+        self.target
+    }
+
+    pub fn sync_target(&mut self, checked: bool) {
+        self.target = checked;
+    }
+
+    pub fn toggle_to(&mut self, checked: bool) {
+        if self.target != checked {
+            self.target = checked;
+            self.press();
+            self.velocity += if checked { 0.86 } else { -0.86 };
+        } else {
+            self.press();
+        }
+    }
+
+    pub fn tick(&mut self, dt: f32) -> bool {
+        let dt = dt.clamp(0.001, 0.05);
+        let target = if self.target { 1. } else { 0. };
+        let distance = target - self.progress;
+
+        if distance.abs() > 0.002 {
+            self.velocity += distance.signum() * SWITCH_ACCELERATION * dt;
+            self.velocity = self
+                .velocity
+                .clamp(-SWITCH_MAX_VELOCITY, SWITCH_MAX_VELOCITY);
+            self.wiggle_x.velocity =
+                (self.wiggle_x.velocity + self.velocity * 0.18).clamp(-18., 18.);
+        } else {
+            self.velocity *= decay_for_dt(0.72, dt);
+        }
+
+        self.progress += self.velocity * dt;
+
+        if self.progress >= 1. {
+            self.progress = 1.;
+            if self.velocity > SWITCH_ENDPOINT_EPS {
+                self.inject_endpoint_collision(true);
+            }
+            self.velocity = 0.;
+        } else if self.progress <= 0. {
+            self.progress = 0.;
+            if self.velocity < -SWITCH_ENDPOINT_EPS {
+                self.inject_endpoint_collision(false);
+            }
+            self.velocity = 0.;
+        }
+
+        self.squash_x.tick(dt);
+        self.squash_z.tick(dt);
+        self.wiggle_x.tick(dt);
+        self.pressed_impulse *= decay_for_dt(0.72, dt);
+
+        self.is_active()
+    }
+
+    pub fn snapshot(self, motion_tick: u64, active: bool) -> JellySwitchMotionSnapshot {
+        let travel_energy = (self.velocity.abs() / SWITCH_MAX_VELOCITY).clamp(0., 1.);
+        let endpoint_contact = if self.progress < 0.04 || self.progress > 0.96 {
+            travel_energy
+        } else {
+            0.
+        };
+        let active_wave = if active {
+            wave_between(motion_tick, 0.2, 0., 1.)
+        } else {
+            0.
+        };
+        let squash_x = ((-self.squash_x.value).max(0.) * 0.38
+            + self.squash_z.value.max(0.) * 0.22
+            + travel_energy * 0.32
+            + self.pressed_impulse * 0.28)
+            .clamp(0., 1.);
+        let squash_y = (self.squash_z.value.max(0.) * 0.28
+            + self.pressed_impulse * 0.22
+            + endpoint_contact * 0.16)
+            .clamp(0., 1.);
+        let rebound = (self.squash_z.value * 0.36 - self.squash_x.value * 0.16).clamp(-0.65, 0.9);
+        let pressure =
+            (self.pressed_impulse * 0.36 + travel_energy * 0.28 + endpoint_contact * 0.2)
+                .clamp(0., 1.);
+        let wiggle_x = self.wiggle_x.value.clamp(-1.2, 1.2);
+
+        JellySwitchMotionSnapshot {
+            progress: self.progress.clamp(0., 1.),
+            velocity: self.velocity,
+            pressure,
+            rebound,
+            squash_x,
+            squash_y,
+            rim_pressure: (travel_energy * 0.42
+                + self.pressed_impulse * 0.2
+                + active_wave * 0.18
+                + endpoint_contact * 0.22)
+                .clamp(0., 1.),
+            gloss_phase: ((motion_tick as f32 * 0.14 + wiggle_x * 0.45)
+                .sin()
+                .mul_add(0.5, 0.5)),
+            inner_lag: (self.squash_z.value.max(0.) * 0.32 + travel_energy * 0.18).clamp(0., 1.),
+            contact: (pressure * 0.55 + endpoint_contact * 0.35 + active_wave * 0.08).clamp(0., 1.),
+            aura: (active_wave * 0.22 + travel_energy * 0.24 + endpoint_contact * 0.22)
+                .clamp(0., 1.),
+            error_shake: 0.,
+            wiggle_x,
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        let target = if self.target { 1. } else { 0. };
+        (self.progress - target).abs() > 0.001
+            || self.velocity.abs() > 0.006
+            || self.pressed_impulse > 0.01
+            || self.squash_x.value.abs() > 0.01
+            || self.squash_x.velocity.abs() > 0.03
+            || self.squash_z.value.abs() > 0.01
+            || self.squash_z.velocity.abs() > 0.03
+            || self.wiggle_x.value.abs() > 0.01
+            || self.wiggle_x.velocity.abs() > 0.03
+    }
+
+    fn press(&mut self) {
+        self.pressed_impulse = 1.;
+        self.squash_x.velocity = (self.squash_x.velocity - 2.).clamp(-18., 18.);
+        self.squash_z.velocity = (self.squash_z.velocity + 1.).clamp(-18., 18.);
+        self.wiggle_x.velocity =
+            (self.wiggle_x.velocity + (self.progress - 0.5).signum()).clamp(-18., 18.);
+    }
+
+    fn inject_endpoint_collision(&mut self, on: bool) {
+        self.squash_x.velocity = (self.squash_x.velocity - 5.).clamp(-18., 18.);
+        self.squash_z.velocity = (self.squash_z.velocity + 5.).clamp(-18., 18.);
+        self.wiggle_x.velocity =
+            (self.wiggle_x.velocity + if on { -10. } else { 10. }).clamp(-18., 18.);
+    }
+}
+
+impl JellySwitchMotionSnapshot {
+    pub fn layer_motion(self) -> JellyMotionSnapshot {
+        JellyMotionSnapshot {
+            pressure: self.pressure,
+            rebound: self.rebound,
+            squash_x: self.squash_x,
+            squash_y: self.squash_y,
+            rim_pressure: self.rim_pressure,
+            gloss_phase: self.gloss_phase,
+            inner_lag: self.inner_lag,
+            contact: self.contact,
+            aura: self.aura,
+            error_shake: self.error_shake,
+        }
     }
 }
 
@@ -505,7 +707,8 @@ pub fn jelly_rebound(age_ticks: u64, duration_ticks: u64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        JellyProgressMotionState, PROGRESS_CHAIN_POINTS, ProgressMotionPhase, VISUAL_MOTION_DT,
+        JellyProgressMotionState, JellySwitchMotionState, PROGRESS_CHAIN_POINTS,
+        ProgressMotionPhase, VISUAL_MOTION_DT,
     };
 
     #[test]
@@ -538,5 +741,33 @@ mod tests {
         assert_eq!(snapshot.target_percent, 42.);
         assert!(snapshot.display_percent < 42.);
         assert!(snapshot.chain.offsets.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn switch_motion_travels_between_endpoints_over_multiple_ticks() {
+        let mut motion = JellySwitchMotionState::new(false);
+
+        motion.toggle_to(true);
+        motion.tick(VISUAL_MOTION_DT);
+        let early = motion.snapshot(1, false);
+
+        assert!(early.progress > 0.);
+        assert!(early.progress < 1.);
+        assert!(early.velocity > 0.);
+    }
+
+    #[test]
+    fn switch_motion_endpoint_collision_leaves_squash_and_wiggle() {
+        let mut motion = JellySwitchMotionState::new(false);
+
+        motion.toggle_to(true);
+        for _ in 0..60 {
+            motion.tick(VISUAL_MOTION_DT);
+        }
+        let snapshot = motion.snapshot(60, true);
+
+        assert_eq!(snapshot.progress, 1.);
+        assert!(snapshot.squash_x > 0. || snapshot.squash_y > 0.);
+        assert!(snapshot.wiggle_x.abs() > 0. || snapshot.rim_pressure > 0.);
     }
 }

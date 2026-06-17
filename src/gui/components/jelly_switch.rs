@@ -5,7 +5,7 @@ use gpui::{
 };
 
 use crate::gui::materials::{JellyMaterialToken, JellyTone};
-use crate::gui::motion::JellyMotionSnapshot;
+use crate::gui::motion::JellySwitchMotionSnapshot;
 use crate::gui::rendering::gpui_layers::{lower_refractive_ridge, top_specular_band};
 use crate::gui::rendering::jelly_image_cache::JellySwitchImage;
 use crate::gui::theme::Palette;
@@ -35,7 +35,7 @@ pub struct JellySwitchConfig {
     pub group: &'static str,
     pub id_seed: usize,
     pub active: bool,
-    pub motion: JellyMotionSnapshot,
+    pub motion: JellySwitchMotionSnapshot,
     pub image: Option<JellySwitchImage>,
 }
 
@@ -46,15 +46,17 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
     };
     let material = switch_material(config.tone, palette);
     let opacity = if config.enabled { 1. } else { 0.46 };
-    let progress = if config.checked { 1. } else { 0. };
+    let progress = config.motion.progress.clamp(0., 1.);
     let endpoint = if config.checked { 1. } else { -1. };
     let active_wave = if config.active {
         ((config.motion_tick as f32 * 0.24).sin().mul_add(0.5, 0.5)) * 0.24
     } else {
         0.
     };
+    let layer_motion = config.motion.layer_motion();
     let settle = config.motion.rebound;
-    let wiggle = (settle * 7.4 + config.motion.error_shake * 2.4).clamp(-7.4, 7.4);
+    let wiggle = (config.motion.wiggle_x * 5.2 + config.motion.velocity * 0.6 + settle * 3.6)
+        .clamp(-8.4, 8.4);
     let travel = track_w - thumb - 10.;
     let endpoint_pull = config.motion.squash_x * 5.8 + settle * 4.6;
     let thumb_left = 5. + travel * progress + endpoint as f32 * endpoint_pull;
@@ -198,7 +200,7 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
                             })
                             .child(top_specular_band(
                                 material,
-                                config.motion,
+                                layer_motion,
                                 12.,
                                 (thumb * 0.14).max(4.),
                                 opacity,
@@ -212,7 +214,7 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
                                     .rounded(px(999.))
                                     .bg(material.specular.opacity(0.24 * opacity)),
                             )
-                            .child(lower_refractive_ridge(material, config.motion, opacity)),
+                            .child(lower_refractive_ridge(material, layer_motion, opacity)),
                     )
                 }),
         )
