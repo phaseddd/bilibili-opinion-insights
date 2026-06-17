@@ -66,7 +66,7 @@ impl EventLine {
                 expected_total,
             } => Self {
                 kind: EventKind::Comments,
-                text: format!("{bvid} 评论分母：预计 {expected_total} 条"),
+                text: format!("{bvid} 评论预计总数：{expected_total} 条"),
             },
             CollectionEvent::CommentBatchWritten {
                 bvid,
@@ -74,7 +74,9 @@ impl EventLine {
                 records_appended,
             } => Self {
                 kind: EventKind::Comments,
-                text: format!("{bvid} 评论批次：扫描 {records_scanned}，新增 {records_appended}"),
+                text: format!(
+                    "{bvid} 评论进度：已处理 {records_scanned} 条，新增 {records_appended} 条"
+                ),
             },
             CollectionEvent::CommentScanFinished { bvid } => Self {
                 kind: EventKind::Success,
@@ -85,7 +87,7 @@ impl EventLine {
                 total_segments,
             } => Self {
                 kind: EventKind::Danmaku,
-                text: format!("{bvid} 弹幕分母：预计 {total_segments} 个分段"),
+                text: format!("{bvid} 弹幕预计分包：{total_segments} 个"),
             },
             CollectionEvent::DanmakuSegmentWritten {
                 bvid,
@@ -95,13 +97,19 @@ impl EventLine {
                 records_scanned,
                 records_appended,
                 segment_appended,
-            } => Self {
-                kind: EventKind::Danmaku,
-                text: format!(
-                    "{bvid} 弹幕分段：cid={cid}，P{page}，段 {segment_index}，扫描 {records_scanned}，新增 {records_appended}，元数据新增 {}",
-                    yes_no(*segment_appended)
-                ),
-            },
+            } => {
+                let segment_state = if *segment_appended {
+                    "分段记录已保存"
+                } else {
+                    "分段记录已存在"
+                };
+                Self {
+                    kind: EventKind::Danmaku,
+                    text: format!(
+                        "{bvid} 弹幕分包：cid={cid}，P{page}，第 {segment_index} 包，已处理 {records_scanned} 条，新增 {records_appended} 条，{segment_state}"
+                    ),
+                }
+            }
             CollectionEvent::DanmakuScanFinished { bvid } => Self {
                 kind: EventKind::Success,
                 text: format!("{bvid} 弹幕扫描完成"),
@@ -114,6 +122,51 @@ impl EventLine {
     }
 }
 
-fn yes_no(value: bool) -> &'static str {
-    if value { "是" } else { "否" }
+#[cfg(test)]
+mod tests {
+    use crate::app::events::CollectionEvent;
+
+    use super::EventLine;
+
+    #[test]
+    fn collection_event_copy_uses_user_facing_progress_terms() {
+        let events = [
+            CollectionEvent::CommentScanPlanned {
+                bvid: "BVTEST".to_string(),
+                expected_total: 42,
+            },
+            CollectionEvent::CommentBatchWritten {
+                bvid: "BVTEST".to_string(),
+                records_scanned: 12,
+                records_appended: 3,
+            },
+            CollectionEvent::DanmakuScanPlanned {
+                bvid: "BVTEST".to_string(),
+                total_segments: 7,
+            },
+            CollectionEvent::DanmakuSegmentWritten {
+                bvid: "BVTEST".to_string(),
+                cid: 1,
+                page: 1,
+                segment_index: 2,
+                records_scanned: 120,
+                records_appended: 8,
+                segment_appended: true,
+            },
+        ];
+
+        let text = events
+            .iter()
+            .map(EventLine::from_collection_event)
+            .map(|line| line.text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("评论预计总数"));
+        assert!(text.contains("评论进度：已处理"));
+        assert!(text.contains("弹幕预计分包"));
+        assert!(text.contains("分段记录已保存"));
+        assert!(!text.contains("分母"));
+        assert!(!text.contains("元数据新增"));
+    }
 }

@@ -70,7 +70,7 @@ pub(crate) fn result_row(
                     .text_size(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(format!(
-                        "{} · 扫描 {} · 新增 {}",
+                        "{} · 已处理 {} · 新增 {}",
                         item.bvid, item.scanned, item.appended
                     )),
             )
@@ -199,7 +199,7 @@ pub(crate) fn empty_result_state(
                 .relative()
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child("暂无结果"),
+                .child("等待运行"),
         )
         .child(
             div()
@@ -207,6 +207,6 @@ pub(crate) fn empty_result_state(
                 .text_size(px(11.))
                 .text_color(palette.muted)
                 .line_height(relative(1.3))
-                .child("完成后这里会显示评论、弹幕、失败项和输出文件。"),
+                .child("采集完成后，这里会显示本次输出文件、失败项和完整性提示。"),
         )
 }

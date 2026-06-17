@@ -224,8 +224,8 @@ fn progress_microcopy(phase: JellyProgressPhase) -> &'static str {
         JellyProgressPhase::Idle => "等待开始采集。",
         JellyProgressPhase::Validating => "正在校验输入与登录态。",
         JellyProgressPhase::Running => "采集中：进度由真实事件推进。",
-        JellyProgressPhase::Cancelling => "正在请求取消，等待 worker 返回。",
-        JellyProgressPhase::Completed => "采集完成，结果可复核。",
+        JellyProgressPhase::Cancelling => "正在请求取消，等待采集任务停止。",
+        JellyProgressPhase::Completed => "采集完成，本次运行摘要可复核。",
         JellyProgressPhase::Failed => "采集失败，保留当前进度与错误信息。",
     }
 }

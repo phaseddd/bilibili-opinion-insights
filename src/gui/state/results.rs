@@ -41,7 +41,7 @@ impl ResultItem {
                 scanned: outcome.summary.comments_scanned,
                 appended: outcome.appended_count,
                 extra: format!(
-                    "主评论页 {}，二级页 {}，接口预估 {}",
+                    "主评论页 {}，二级评论页 {}，预计总数 {}",
                     outcome.summary.main_pages_scanned,
                     outcome.summary.reply_pages_scanned,
                     outcome.expected_total
@@ -58,7 +58,7 @@ impl ResultItem {
                 scanned: outcome.records_scanned,
                 appended: outcome.records_appended,
                 extra: format!(
-                    "分段 {}，新增分段 {}",
+                    "弹幕分包 {}，新增分包 {}",
                     outcome.segments_scanned, outcome.segments_appended
                 ),
                 outputs: vec![
@@ -74,12 +74,12 @@ pub(crate) fn format_collection_job(job: &CollectionJobOutcome) -> String {
     match job {
         CollectionJobOutcome::Comments(outcome) => {
             format!(
-                "评论完成：{}，扫描 {}，新增 {}",
+                "评论完成：{}，已处理 {}，新增 {}",
                 outcome.bvid, outcome.summary.comments_scanned, outcome.appended_count
             )
         }
         CollectionJobOutcome::Danmaku(outcome) => format!(
-            "弹幕完成：{}，扫描 {}，新增 {}，分段 {}",
+            "弹幕完成：{}，已处理 {}，新增 {}，分包 {}",
             outcome.bvid,
             outcome.records_scanned,
             outcome.records_appended,

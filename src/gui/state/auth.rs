@@ -209,7 +209,7 @@ impl SessionMode {
             SessionKind::Anonymous => {
                 "匿名请求可能导致评论、弹幕或部分接口结果不完整。".to_string()
             }
-            SessionKind::Unknown => "尚未通过 nav 登录态校验。".to_string(),
+            SessionKind::Unknown => "尚未完成登录状态校验。".to_string(),
         }
     }
 }
@@ -234,8 +234,8 @@ impl AuthPhase {
 pub(crate) fn credential_source_label(source: CredentialSource) -> &'static str {
     match source {
         CredentialSource::None => "无凭据",
-        CredentialSource::DefaultCookie => "默认 cookie",
-        CredentialSource::ExplicitCookie => "显式 cookie",
+        CredentialSource::DefaultCookie => "默认 Cookie 文件",
+        CredentialSource::ExplicitCookie => "手动指定的 Cookie",
         CredentialSource::QrLogin => "二维码登录",
         CredentialSource::Anonymous => "匿名",
     }

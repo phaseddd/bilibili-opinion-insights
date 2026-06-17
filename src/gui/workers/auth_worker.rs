@@ -118,7 +118,7 @@ async fn auth_bootstrap(explicit_cookie: Option<PathBuf>) -> Result<AuthMessage>
         Err(error) if credential_exists => {
             return Ok(AuthMessage::AuthError {
                 phase: AuthPhase::CredentialInvalid,
-                message: format!("cookie 无法作为登录凭据使用：{error}"),
+                message: format!("Cookie 无法作为登录凭据使用：{error}"),
             });
         }
         Err(error) => return Err(error),
@@ -143,30 +143,30 @@ async fn auth_bootstrap(explicit_cookie: Option<PathBuf>) -> Result<AuthMessage>
     let (phase, message) = match (source, session.kind) {
         (CredentialSource::DefaultCookie, SessionKind::LoggedIn) => (
             AuthPhase::LoggedIn,
-            format!("nav 已确认登录：{}", session.detail()),
+            format!("登录状态已确认：{}", session.detail()),
         ),
         (CredentialSource::ExplicitCookie, SessionKind::LoggedIn) => (
             AuthPhase::LoggedIn,
-            format!("nav 已确认显式 cookie 登录：{}", session.detail()),
+            format!("手动指定的 Cookie 登录状态已确认：{}", session.detail()),
         ),
         (CredentialSource::DefaultCookie, _) => {
             session.completeness_warning = true;
             (
                 AuthPhase::CredentialInvalid,
-                "默认 cookie 已读取，但 nav 未确认登录态；请扫码登录或匿名进入。".to_string(),
+                "默认 Cookie 文件已读取，但登录状态未确认；请扫码登录或匿名进入。".to_string(),
             )
         }
         (CredentialSource::ExplicitCookie, _) => {
             session.completeness_warning = true;
             (
                 AuthPhase::CredentialInvalid,
-                "显式 cookie 已读取，但 nav 未确认登录态；请更换 cookie、扫码登录或匿名进入。"
+                "手动指定的 Cookie 已读取，但登录状态未确认；请更换 Cookie、扫码登录或匿名进入。"
                     .to_string(),
             )
         }
         (CredentialSource::None, _) => (
             AuthPhase::CredentialMissing,
-            "未发现默认 cookie；已调用 nav 确认为未登录，可扫码登录或匿名进入。".to_string(),
+            "未发现默认 Cookie 文件；当前未登录，可扫码登录或匿名进入。".to_string(),
         ),
         _ => (AuthPhase::CredentialError, "登录态来源异常。".to_string()),
     };
@@ -242,7 +242,7 @@ async fn poll_qr_login(
                 let cookie_path = PathBuf::from(DEFAULT_COOKIE_PATH);
                 let _ = sender.send(GuiMessage::Auth(AuthMessage::QrStatus {
                     status: QrLoginStatus::WaitingForConfirm,
-                    message: "扫码授权成功，正在保存 cookie 并复核 nav。".to_string(),
+                    message: "扫码授权成功，正在保存 Cookie 并再次确认登录状态。".to_string(),
                 }));
                 if cancel.load(Ordering::SeqCst) {
                     return Ok(());
@@ -250,7 +250,7 @@ async fn poll_qr_login(
                 save_cookie_header(&cookie_path, &cookie_header)?;
                 let _ = sender.send(GuiMessage::Auth(AuthMessage::QrCookieSaved {
                     path: cookie_path.clone(),
-                    message: format!("cookie 已保存：{}", cookie_path.display()),
+                    message: format!("Cookie 已保存：{}", cookie_path.display()),
                 }));
 
                 if cancel.load(Ordering::SeqCst) {
@@ -264,9 +264,9 @@ async fn poll_qr_login(
                     Some(cookie_path),
                 );
                 let message = if session.kind == SessionKind::LoggedIn {
-                    format!("保存后 nav 已确认登录：{}", session.detail())
+                    format!("保存后登录状态已确认：{}", session.detail())
                 } else {
-                    "保存后 nav 未确认登录态。".to_string()
+                    "保存后登录状态仍未确认。".to_string()
                 };
                 let _ = sender.send(GuiMessage::Auth(AuthMessage::QrNavRechecked {
                     session,

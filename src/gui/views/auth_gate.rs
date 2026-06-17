@@ -90,8 +90,8 @@ pub(crate) fn auth_risk_block(session: &SessionMode, palette: &Palette) -> impl 
     let (kind, title, body) = match session.kind {
         SessionKind::LoggedIn => (
             EventKind::Success,
-            "已通过真实 nav 校验",
-            "工作台将复用当前 cookie 来源；登录态失效时需要重新校验或扫码登录。",
+            "已通过真实登录状态校验",
+            "工作台将复用当前 Cookie 来源；登录态失效时需要重新校验或扫码登录。",
         ),
         SessionKind::Anonymous => (
             EventKind::Warning,
@@ -145,7 +145,7 @@ pub(crate) fn auth_lifecycle_block(
         .gap(px(10.))
         .child(auth_lifecycle_chip(
             "1",
-            "nav 校验",
+            "登录状态校验",
             matches!(
                 auth.phase,
                 AuthPhase::BootChecking
@@ -515,7 +515,7 @@ pub(crate) fn qr_helper_copy(auth: &AuthState) -> String {
             "二维码已过期。点击“刷新二维码”重新生成，不需要关闭应用或重启登录流程。".to_string()
         }
         AuthPhase::QrSuccessChecking => "授权已收到，正在保存登录状态并再次确认账号。".to_string(),
-        AuthPhase::LoggedIn => "登录态已通过 nav 确认，可以进入工作台。".to_string(),
+        AuthPhase::LoggedIn => "登录态已确认，可以进入工作台。".to_string(),
         AuthPhase::AnonymousAvailable => {
             "你已选择匿名进入；后续采集会持续显示完整性风险。".to_string()
         }

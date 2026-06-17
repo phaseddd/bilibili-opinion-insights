@@ -311,9 +311,11 @@ impl TaskState {
     }
 
     pub(crate) fn clear_idle_progress(&mut self) {
+        self.phase = TaskPhase::Idle;
         self.progress = ProgressState::default();
         self.lanes.clear();
         self.active_summary = None;
+        self.validation_error = None;
     }
 
     pub(crate) fn mark_failure(&mut self, bvid: &str, kind: &str) {
@@ -502,14 +504,14 @@ impl TaskLane {
     pub(crate) fn detail(&self) -> String {
         match self.kind {
             TaskLaneKind::Comments => format!(
-                "扫描 {} · 新增 {} · 分母 {}{}",
+                "已处理 {} 条 · 新增 {} 条 · 预计总数 {}{}",
                 self.scanned,
                 self.appended,
                 expected_label(self.expected_total, "条"),
                 output_label(self.output_ready)
             ),
             TaskLaneKind::Danmaku => format!(
-                "分段 {} / {} · 弹幕新增 {}{}",
+                "弹幕分包 {} / {} · 新增 {} 条{}",
                 self.scanned,
                 expected_label(self.expected_total, "段"),
                 self.appended,
@@ -772,5 +774,21 @@ mod tests {
             .expect("comment lane");
         assert_eq!(lane.phase, TaskLanePhase::Failed);
         assert!(lane.target_percent < 100.);
+    }
+
+    #[test]
+    fn clear_idle_progress_resets_completed_phase_and_validation() {
+        let mut task = TaskState::default();
+        task.begin_run(one_video_summary(), 2);
+        task.validation_error = Some("旧错误".to_string());
+        task.finish_run(true);
+
+        task.clear_idle_progress();
+
+        assert_eq!(task.phase, TaskPhase::Idle);
+        assert_eq!(task.progress.target_percent, 0.);
+        assert!(task.lanes.is_empty());
+        assert!(task.active_summary.is_none());
+        assert!(task.validation_error.is_none());
     }
 }

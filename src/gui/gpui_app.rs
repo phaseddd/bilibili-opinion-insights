@@ -171,13 +171,16 @@ impl BiliOpinionGui {
         self.auth.set_phase(
             AuthPhase::BootChecking,
             if let Some(path) = explicit_cookie.as_ref() {
-                format!("正在读取显式 cookie 并调用 nav 校验：{}", path.display())
+                format!(
+                    "正在读取手动指定的 Cookie 并校验登录状态：{}",
+                    path.display()
+                )
             } else {
-                "正在读取默认 cookie 并调用 nav 校验登录态。".to_string()
+                "正在读取默认 Cookie 文件并校验登录状态。".to_string()
             },
         );
         self.events
-            .push(EventKind::System, "身份入口：启动 nav 登录态校验。");
+            .push(EventKind::System, "身份入口：开始登录状态校验。");
 
         let (sender, receiver) = mpsc::channel();
         spawn_auth_bootstrap_worker(sender, cancel, explicit_cookie);
@@ -570,7 +573,7 @@ impl BiliOpinionGui {
             AuthMessage::BootChecking => {
                 self.auth.set_phase(
                     AuthPhase::BootChecking,
-                    "正在读取默认 cookie 并调用 nav 校验登录态。",
+                    "正在读取默认 Cookie 文件并校验登录状态。",
                 );
             }
             AuthMessage::NavChecked {
@@ -650,7 +653,7 @@ impl BiliOpinionGui {
                 } else {
                     self.auth.set_error(
                         AuthPhase::CredentialInvalid,
-                        "二维码 cookie 已保存，但 nav 未确认登录态，请刷新二维码重试。",
+                        "二维码 Cookie 已保存，但登录状态未确认，请刷新二维码重试。",
                     );
                     self.events.push(EventKind::Failure, message);
                 }
@@ -731,7 +734,7 @@ impl BiliOpinionGui {
             self.task.request_cancel_visual();
             self.events.push(
                 EventKind::Warning,
-                "取消控制已进入产品化改造队列：当前 worker 仍会等待 collector 自然返回。",
+                "正在请求取消；当前采集任务会在安全位置停止。",
             );
             cx.notify();
         }
@@ -988,7 +991,7 @@ impl BiliOpinionGui {
                                                             .text_size(px(12.))
                                                             .text_color(palette.muted)
                                                             .child(
-                                                                "身份入口会先真实调用 nav 校验登录态，再决定登录或匿名进入。",
+                                                                "身份入口会先真实校验登录状态，再决定登录或匿名进入。",
                                                             ),
                                                     ),
                                             ),
@@ -1470,7 +1473,7 @@ impl BiliOpinionGui {
             ))
             .child(form_section(
                 "Cookie 文件",
-                "工作台默认继承身份入口状态；这里仍可填写显式 cookie 文件供采集使用。",
+                "工作台默认继承身份入口状态；这里仍可填写手动指定的 Cookie 文件供采集使用。",
                 jelly_form_field(
                     Input::new(&self.form.cookie_input)
                         .cleanable(true)
@@ -1715,16 +1718,14 @@ impl BiliOpinionGui {
         );
 
         panel(palette)
+            .flex_shrink_0()
+            .max_h(px(430.))
             .gap(px(14.))
             .child(
                 h_flex()
                     .items_center()
                     .justify_between()
-                    .child(panel_title(
-                        "任务进度",
-                        "以真实 collector 事件推进",
-                        palette,
-                    ))
+                    .child(panel_title("任务进度", "根据实际采集进度更新", palette))
                     .child(status_capsule(
                         self.task.phase.label(),
                         phase_kind,
@@ -1782,7 +1783,14 @@ impl BiliOpinionGui {
 
     fn render_task_lanes(&mut self, palette: &Palette) -> impl IntoElement {
         v_flex()
+            .id("gui-task-lanes-scroll")
+            .max_h(px(178.))
             .gap(px(8.))
+            .p(px(8.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(palette.border)
+            .bg(palette.event_bg)
             .children(self.task.lanes.iter().map(|lane| {
                 let motion = lane.motion_snapshot(self.visual.motion_tick);
                 let tone = jelly_task_lane_tone(lane);
@@ -1803,6 +1811,7 @@ impl BiliOpinionGui {
 
                 jelly_task_lane(lane, self.visual.motion_tick, palette, bitmap)
             }))
+            .overflow_y_scrollbar()
     }
 
     fn event_surface_image(
@@ -1992,7 +2001,7 @@ impl BiliOpinionGui {
                     .text_size(px(11.))
                     .text_color(palette.muted)
                     .child(format!(
-                        "{}/{} 单元",
+                        "{}/{} 项工作",
                         self.task.progress.completed_units, self.task.progress.total_units
                     )),
             )
@@ -2043,10 +2052,12 @@ impl BiliOpinionGui {
     fn render_result_panel(&mut self, palette: &Palette) -> impl IntoElement {
         let result_items = self.results.jobs.to_vec();
         let failure_items = self.results.failures.to_vec();
-        let result_label = if self.results.jobs.is_empty() {
-            "等待结果"
+        let result_label = if !self.results.failures.is_empty() {
+            "有失败项"
+        } else if self.results.jobs.is_empty() {
+            "等待运行"
         } else {
-            "可复核"
+            "有输出"
         };
         let result_kind = if self.results.failures.is_empty() {
             EventKind::Output
@@ -2066,14 +2077,16 @@ impl BiliOpinionGui {
         };
 
         panel(palette)
+            .flex_shrink_0()
+            .max_h(px(250.))
             .gap(px(12.))
             .child(
                 h_flex()
                     .items_center()
                     .justify_between()
                     .child(panel_title(
-                        "结果查看",
-                        "采集后汇总输出文件与失败项",
+                        "本次运行",
+                        "输出摘要、失败项和完整性提示",
                         palette,
                     ))
                     .child(status_capsule(
@@ -2085,6 +2098,7 @@ impl BiliOpinionGui {
             )
             .child(
                 v_flex()
+                    .max_h(px(132.))
                     .gap(px(8.))
                     .children(result_items.iter().map(|item| {
                         let image = self.result_surface_image(palette, item);
@@ -2092,16 +2106,19 @@ impl BiliOpinionGui {
                     }))
                     .when(self.results.jobs.is_empty(), |this| {
                         this.child(empty_result_state(palette, empty_result_image))
-                    }),
+                    })
+                    .overflow_y_scrollbar(),
             )
             .when(!self.results.failures.is_empty(), |this| {
                 this.child(
                     v_flex()
+                        .max_h(px(78.))
                         .gap(px(6.))
                         .children(failure_items.iter().map(|failure| {
                             let image = self.failure_surface_image(palette, failure);
                             failure_row(failure, palette, image)
-                        })),
+                        }))
+                        .overflow_y_scrollbar(),
                 )
             })
             .when_some(self.results.output_root.clone(), |this, output| {
