@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use gpui::{
     App, AppContext as _, Application, Bounds, ClickEvent, Context, Entity, FontWeight,
@@ -34,9 +34,7 @@ use crate::gui::components::jelly_switch::{
 use crate::gui::components::jelly_task_lane::{jelly_task_lane, jelly_task_lane_tone};
 use crate::gui::materials::{JellyMaterialToken, JellyTone};
 use crate::gui::messages::{AuthMessage, GuiMessage};
-use crate::gui::motion::{
-    JellyMotionSnapshot, JellySwitchMotionSnapshot, VISUAL_MOTION_TICK_MS, wave_between,
-};
+use crate::gui::motion::{JellyMotionSnapshot, JellySwitchMotionSnapshot, wave_between};
 use crate::gui::rendering::jelly_image_cache::{
     JellyButtonImage, JellyButtonImageRequest, JellyCapsuleImage, JellyCapsuleImageRequest,
     JellyProgressImagePhase, JellyProgressImageQuality, JellyProgressImageRequest,
@@ -187,7 +185,6 @@ impl BiliOpinionGui {
         let (sender, receiver) = mpsc::channel();
         spawn_auth_bootstrap_worker(sender, cancel, explicit_cookie);
         spawn_message_pump(receiver, cx);
-        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
@@ -204,7 +201,6 @@ impl BiliOpinionGui {
         let (sender, receiver) = mpsc::channel();
         spawn_qr_generate_worker(sender, cancel);
         spawn_message_pump(receiver, cx);
-        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
@@ -258,49 +254,26 @@ impl BiliOpinionGui {
 
     fn trigger_button_motion(&mut self, id: ButtonMotionId, cx: &mut Context<Self>) {
         self.visual.trigger_button(id);
-        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
-    fn ensure_motion_loop(&mut self, cx: &mut Context<Self>) {
-        if self.visual.motion_loop_running || !self.should_animate_visuals() {
+    fn advance_visual_motion(&mut self, window: &mut Window) {
+        if !self.should_animate_visuals() {
+            self.visual.stop_motion_frame_clock();
             return;
         }
 
-        self.visual.motion_loop_running = true;
-        cx.spawn(async move |view, cx| {
-            let mut last_frame = Instant::now();
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(VISUAL_MOTION_TICK_MS))
-                    .await;
+        let dt = self.visual.begin_motion_frame();
+        self.visual.motion_tick = self.visual.motion_tick.wrapping_add(1);
+        self.visual.tick_button_motion(dt);
+        self.task.tick_visual_motion(dt);
+        self.visual.tick_switch_motion(dt);
 
-                let now = Instant::now();
-                let dt = now.duration_since(last_frame).as_secs_f32();
-                last_frame = now;
-
-                let keep_running = match view.update(cx, |view, cx| {
-                    if view.should_animate_visuals() {
-                        view.visual.motion_tick = view.visual.motion_tick.wrapping_add(1);
-                        view.task.tick_visual_motion(dt);
-                        view.visual.tick_switch_motion(dt);
-                        cx.notify();
-                        true
-                    } else {
-                        view.visual.motion_loop_running = false;
-                        false
-                    }
-                }) {
-                    Ok(keep_running) => keep_running,
-                    Err(_) => return,
-                };
-
-                if !keep_running {
-                    return;
-                }
-            }
-        })
-        .detach();
+        if self.should_animate_visuals() {
+            window.request_animation_frame();
+        } else {
+            self.visual.stop_motion_frame_clock();
+        }
     }
 
     fn should_animate_visuals(&self) -> bool {
@@ -567,8 +540,6 @@ impl BiliOpinionGui {
                 );
             }
         }
-        self.visual.motion_tick = self.visual.motion_tick.wrapping_add(1);
-        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
@@ -689,7 +660,6 @@ impl BiliOpinionGui {
         }
         self.form.collect_comments = !self.form.collect_comments;
         self.visual.toggle_switch(101, self.form.collect_comments);
-        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
@@ -699,7 +669,6 @@ impl BiliOpinionGui {
         }
         self.form.collect_danmaku = !self.form.collect_danmaku;
         self.visual.toggle_switch(102, self.form.collect_danmaku);
-        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
@@ -709,7 +678,6 @@ impl BiliOpinionGui {
         }
         self.form.write_csv = !self.form.write_csv;
         self.visual.toggle_switch(103, self.form.write_csv);
-        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
@@ -719,7 +687,6 @@ impl BiliOpinionGui {
         }
         self.form.write_jsonl = !self.form.write_jsonl;
         self.visual.toggle_switch(104, self.form.write_jsonl);
-        self.ensure_motion_loop(cx);
         cx.notify();
     }
 
@@ -813,7 +780,9 @@ fn spawn_message_pump(receiver: mpsc::Receiver<GuiMessage>, cx: &mut Context<Bil
 }
 
 impl Render for BiliOpinionGui {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.advance_visual_motion(window);
+
         let palette = Palette::default();
         let can_start = !self.task.phase.is_busy();
 

@@ -1,15 +1,19 @@
+use std::time::Instant;
+
 use crate::gui::motion::{
-    JellyMotionSnapshot, JellySwitchMotionSnapshot, JellySwitchMotionState, VISUAL_MOTION_DT,
+    CONTROL_IMPULSE_SECONDS, JellyMotionSnapshot, JellySwitchMotionSnapshot,
+    JellySwitchMotionState, MIN_VISUAL_FRAME_DT, VISUAL_MOTION_DT,
 };
 use crate::gui::rendering::jelly_image_cache::JellyImageCache;
 
-const CONTROL_IMPULSE_TICKS: u64 = 72;
+const MOTION_STATS_SMOOTHING: f32 = 0.12;
 
 #[derive(Default)]
 pub(crate) struct VisualState {
     pub(crate) motion_tick: u64,
-    pub(crate) motion_loop_running: bool,
     pub(crate) image_cache: JellyImageCache,
+    motion_frame_clock: Option<Instant>,
+    motion_frame_budget: MotionFrameBudget,
     impulses: Vec<MotionImpulse>,
     switches: Vec<(usize, JellySwitchMotionState)>,
 }
@@ -28,12 +32,77 @@ pub(crate) enum ButtonMotionId {
 #[derive(Clone, Copy, Debug)]
 struct MotionImpulse {
     id: ButtonMotionId,
-    pub(crate) started_tick: u64,
+    age_seconds: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct MotionFrameStats {
+    pub(crate) frames: u64,
+    pub(crate) slow_frames: u64,
+    pub(crate) last_dt: f32,
+    pub(crate) max_dt: f32,
+    pub(crate) ema_dt: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MotionFrameBudget {
+    stats: MotionFrameStats,
+}
+
+impl MotionFrameBudget {
+    fn record(&mut self, dt: f32) -> f32 {
+        let dt = if dt.is_finite() && dt > 0. {
+            dt
+        } else {
+            VISUAL_MOTION_DT
+        };
+
+        self.stats.frames = self.stats.frames.saturating_add(1);
+        self.stats.last_dt = dt;
+        self.stats.max_dt = self.stats.max_dt.max(dt);
+        if dt > MIN_VISUAL_FRAME_DT {
+            self.stats.slow_frames = self.stats.slow_frames.saturating_add(1);
+        }
+        self.stats.ema_dt = if self.stats.frames == 1 {
+            dt
+        } else {
+            self.stats.ema_dt * (1. - MOTION_STATS_SMOOTHING) + dt * MOTION_STATS_SMOOTHING
+        };
+
+        dt.clamp(0.001, 0.05)
+    }
 }
 
 impl VisualState {
+    pub(crate) fn begin_motion_frame(&mut self) -> f32 {
+        let now = Instant::now();
+        let dt = self
+            .motion_frame_clock
+            .map(|last| now.duration_since(last).as_secs_f32())
+            .unwrap_or(VISUAL_MOTION_DT);
+        self.motion_frame_clock = Some(now);
+        self.motion_frame_budget.record(dt)
+    }
+
+    pub(crate) fn stop_motion_frame_clock(&mut self) {
+        self.motion_frame_clock = None;
+    }
+
     pub(crate) fn trigger_button(&mut self, id: ButtonMotionId) {
         self.trigger(id);
+    }
+
+    pub(crate) fn tick_button_motion(&mut self, dt: f32) {
+        let dt = if dt.is_finite() && dt > 0. {
+            dt
+        } else {
+            VISUAL_MOTION_DT
+        };
+        for impulse in &mut self.impulses {
+            impulse.age_seconds += dt;
+        }
+        self.impulses
+            .retain(|impulse| impulse.age_seconds <= CONTROL_IMPULSE_SECONDS);
     }
 
     pub(crate) fn toggle_switch(&mut self, id_seed: usize, checked: bool) {
@@ -97,28 +166,68 @@ impl VisualState {
     }
 
     pub(crate) fn has_active_control_motion(&self) -> bool {
-        self.impulses.iter().any(|impulse| {
-            self.motion_tick.saturating_sub(impulse.started_tick) <= CONTROL_IMPULSE_TICKS
-        }) || self.switches.iter().any(|(_, state)| state.is_active())
+        !self.impulses.is_empty() || self.switches.iter().any(|(_, state)| state.is_active())
     }
 
     fn trigger(&mut self, id: ButtonMotionId) {
-        self.impulses.retain(|impulse| {
-            impulse.id != id
-                && self.motion_tick.saturating_sub(impulse.started_tick) <= CONTROL_IMPULSE_TICKS
-        });
+        self.impulses.retain(|impulse| impulse.id != id);
         self.impulses.push(MotionImpulse {
             id,
-            started_tick: self.motion_tick,
+            age_seconds: 0.,
         });
     }
 
-    fn age_for(&self, id: ButtonMotionId) -> Option<u64> {
+    fn age_for(&self, id: ButtonMotionId) -> Option<f32> {
         self.impulses
             .iter()
             .rev()
             .find(|impulse| impulse.id == id)
-            .map(|impulse| self.motion_tick.saturating_sub(impulse.started_tick))
-            .filter(|age| *age <= CONTROL_IMPULSE_TICKS)
+            .map(|impulse| impulse.age_seconds)
+            .filter(|age| *age <= CONTROL_IMPULSE_SECONDS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ButtonMotionId, MotionFrameBudget, VisualState};
+    use crate::gui::motion::{CONTROL_IMPULSE_SECONDS, MIN_VISUAL_FRAME_DT, VISUAL_MOTION_DT};
+
+    #[test]
+    fn frame_budget_records_60fps_misses_without_clamping_stats() {
+        let mut budget = MotionFrameBudget::default();
+
+        let fast_dt = budget.record(VISUAL_MOTION_DT);
+        let slow_dt = budget.record(MIN_VISUAL_FRAME_DT * 1.4);
+
+        assert_eq!(budget.stats.frames, 2);
+        assert_eq!(budget.stats.slow_frames, 1);
+        assert!(budget.stats.max_dt > MIN_VISUAL_FRAME_DT);
+        assert_eq!(fast_dt, VISUAL_MOTION_DT);
+        assert!(slow_dt > MIN_VISUAL_FRAME_DT);
+    }
+
+    #[test]
+    fn frame_budget_uses_reference_dt_for_invalid_samples() {
+        let mut budget = MotionFrameBudget::default();
+
+        let dt = budget.record(f32::NAN);
+
+        assert_eq!(dt, VISUAL_MOTION_DT);
+        assert_eq!(budget.stats.frames, 1);
+        assert_eq!(budget.stats.slow_frames, 0);
+    }
+
+    #[test]
+    fn button_impulse_duration_uses_elapsed_seconds() {
+        let mut visual = VisualState::default();
+
+        visual.trigger_button(ButtonMotionId::HeaderStart);
+        visual.tick_button_motion(CONTROL_IMPULSE_SECONDS * 0.5);
+
+        assert!(visual.has_active_control_motion());
+
+        visual.tick_button_motion(CONTROL_IMPULSE_SECONDS * 0.6);
+
+        assert!(!visual.has_active_control_motion());
     }
 }

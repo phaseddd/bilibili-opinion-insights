@@ -28,7 +28,8 @@ use crate::gui::rendering::jelly_switch_bitmap::{
 };
 
 const MAX_CACHED_IMAGES: usize = 96;
-const PROGRESS_PHASE_STEPS: u8 = 10;
+const PROGRESS_BUCKET_STEPS: u8 = 100;
+const SWITCH_PROGRESS_STEPS: u8 = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum JellyProgressImageQuality {
@@ -140,7 +141,6 @@ struct JellyProgressImageKey {
     pressure_bucket: u8,
     rebound_bucket: i8,
     contact_bucket: u8,
-    phase_bucket: u8,
     chain_front_bucket: i8,
     chain_mid_bucket: i8,
     chain_back_bucket: i8,
@@ -158,10 +158,8 @@ struct JellyButtonImageKey {
     squash_x_bucket: u8,
     squash_y_bucket: u8,
     rim_bucket: u8,
-    gloss_bucket: u8,
     inner_bucket: u8,
     contact_bucket: u8,
-    aura_bucket: u8,
     tone: JellyTone,
     enabled: bool,
     loading: bool,
@@ -176,11 +174,7 @@ struct JellySwitchImageKey {
     rebound_bucket: i8,
     squash_x_bucket: u8,
     squash_y_bucket: u8,
-    rim_bucket: u8,
-    gloss_bucket: u8,
     inner_bucket: u8,
-    contact_bucket: u8,
-    aura_bucket: u8,
     tone: JellyTone,
     checked: bool,
     enabled: bool,
@@ -240,7 +234,7 @@ impl JellyImageCache {
 
         let render_width = key.width_px as f32;
         let render_height = key.height_px as f32;
-        let fill = (key.progress_bucket as f32 / 100.).clamp(0.02, 1.);
+        let fill = (key.progress_bucket as f32 / PROGRESS_BUCKET_STEPS as f32).clamp(0.02, 1.);
         let shape = JellyRibbonChainShape {
             shape: JellyRibbonShape {
                 origin_x: 0.,
@@ -251,8 +245,7 @@ impl JellyImageCache {
                 pressure: key.pressure_bucket as f32 / 8.,
                 rebound: key.rebound_bucket as f32 / 8.,
                 compression: key.contact_bucket as f32 / 8.,
-                phase: key.phase_bucket as f32 / PROGRESS_PHASE_STEPS as f32
-                    * std::f32::consts::TAU,
+                phase: 0.,
             },
             chain: request.motion.chain,
         };
@@ -306,10 +299,10 @@ impl JellyImageCache {
                 squash_x: key.squash_x_bucket as f32 / 10.,
                 squash_y: key.squash_y_bucket as f32 / 10.,
                 rim_pressure: key.rim_bucket as f32 / 10.,
-                gloss_phase: key.gloss_bucket as f32 / 16.,
+                gloss_phase: 0.5,
                 inner_lag: key.inner_bucket as f32 / 10.,
                 contact: key.contact_bucket as f32 / 10.,
-                aura: key.aura_bucket as f32 / 10.,
+                aura: if key.loading { 0.24 } else { 0.12 },
                 error_shake: request.motion.error_shake,
             },
             enabled: key.enabled,
@@ -338,17 +331,17 @@ impl JellyImageCache {
             pixel_size: if render_height >= 46. { 1.3 } else { 1.45 },
             material: request.material,
             motion: JellySwitchMotionSnapshot {
-                progress: key.progress_bucket as f32 / 32.,
+                progress: key.progress_bucket as f32 / SWITCH_PROGRESS_STEPS as f32,
                 velocity: request.motion.velocity,
                 pressure: key.pressure_bucket as f32 / 10.,
                 rebound: key.rebound_bucket as f32 / 10.,
                 squash_x: key.squash_x_bucket as f32 / 10.,
                 squash_y: key.squash_y_bucket as f32 / 10.,
-                rim_pressure: key.rim_bucket as f32 / 10.,
-                gloss_phase: key.gloss_bucket as f32 / 16.,
+                rim_pressure: if key.active { 0.38 } else { 0.22 },
+                gloss_phase: 0.5,
                 inner_lag: key.inner_bucket as f32 / 10.,
-                contact: key.contact_bucket as f32 / 10.,
-                aura: key.aura_bucket as f32 / 10.,
+                contact: if key.active { 0.34 } else { 0.18 } + key.pressure_bucket as f32 / 32.,
+                aura: if key.active { 0.32 } else { 0.16 },
                 error_shake: request.motion.error_shake,
                 wiggle_x: request.motion.wiggle_x,
             },
@@ -455,11 +448,13 @@ impl JellyProgressImageKey {
         Some(Self {
             width_px,
             height_px,
-            progress_bucket: quantize_unit(request.motion.display_percent / 100., 100) as u8,
+            progress_bucket: quantize_unit(
+                request.motion.display_percent / 100.,
+                PROGRESS_BUCKET_STEPS,
+            ) as u8,
             pressure_bucket: quantize_unit(request.motion.pressure, 8) as u8,
             rebound_bucket: quantize_signed(request.motion.rebound, 8),
             contact_bucket: quantize_unit(request.motion.contact, 8) as u8,
-            phase_bucket: quantize_unit(request.motion.gloss_phase, PROGRESS_PHASE_STEPS) as u8,
             chain_front_bucket: quantize_signed(chain[PROGRESS_CHAIN_POINTS / 4], 5),
             chain_mid_bucket: quantize_signed(chain[PROGRESS_CHAIN_POINTS / 2], 5),
             chain_back_bucket: quantize_signed(chain[PROGRESS_CHAIN_POINTS * 3 / 4], 5),
@@ -483,10 +478,8 @@ impl JellyButtonImageKey {
             squash_x_bucket: quantize_unit(request.motion.squash_x, 10) as u8,
             squash_y_bucket: quantize_unit(request.motion.squash_y, 10) as u8,
             rim_bucket: quantize_unit(request.motion.rim_pressure, 10) as u8,
-            gloss_bucket: quantize_unit(request.motion.gloss_phase, 16) as u8,
             inner_bucket: quantize_unit(request.motion.inner_lag, 10) as u8,
             contact_bucket: quantize_unit(request.motion.contact, 10) as u8,
-            aura_bucket: quantize_unit(request.motion.aura, 10) as u8,
             tone: request.tone,
             enabled: request.enabled,
             loading: request.loading,
@@ -502,16 +495,12 @@ impl JellySwitchImageKey {
         Some(Self {
             width_px,
             height_px,
-            progress_bucket: quantize_unit(request.motion.progress, 32) as u8,
+            progress_bucket: quantize_unit(request.motion.progress, SWITCH_PROGRESS_STEPS) as u8,
             pressure_bucket: quantize_unit(request.motion.pressure, 10) as u8,
             rebound_bucket: quantize_signed(request.motion.rebound, 10),
             squash_x_bucket: quantize_unit(request.motion.squash_x, 10) as u8,
             squash_y_bucket: quantize_unit(request.motion.squash_y, 10) as u8,
-            rim_bucket: quantize_unit(request.motion.rim_pressure, 10) as u8,
-            gloss_bucket: quantize_unit(request.motion.gloss_phase, 16) as u8,
             inner_bucket: quantize_unit(request.motion.inner_lag, 10) as u8,
-            contact_bucket: quantize_unit(request.motion.contact, 10) as u8,
-            aura_bucket: quantize_unit(request.motion.aura, 10) as u8,
             tone: request.tone,
             checked: request.checked,
             enabled: request.enabled,
@@ -724,6 +713,42 @@ mod tests {
     }
 
     #[test]
+    fn progress_image_cache_keeps_gloss_phase_out_of_bitmap_key() {
+        let mut cache = JellyImageCache::default();
+        let material = JellyMaterialToken::for_tone(JellyTone::Primary, &Palette::default());
+        let mut first_motion = sample_motion(37.2);
+        first_motion.gloss_phase = 0.05;
+        let mut second_motion = first_motion;
+        second_motion.gloss_phase = 0.95;
+
+        let first = cache
+            .progress_image(sample_request(
+                640.,
+                46.,
+                JellyProgressImageQuality::Main,
+                first_motion,
+                JellyProgressImagePhase::Running,
+                JellyTone::Primary,
+                material,
+            ))
+            .expect("first progress image");
+        let second = cache
+            .progress_image(sample_request(
+                640.,
+                46.,
+                JellyProgressImageQuality::Main,
+                second_motion,
+                JellyProgressImagePhase::Running,
+                JellyTone::Primary,
+                material,
+            ))
+            .expect("second progress image");
+
+        assert_eq!(cache.len(), 1);
+        assert!(Arc::ptr_eq(&first.image, &second.image));
+    }
+
+    #[test]
     fn progress_image_cache_splits_material_tones() {
         let mut cache = JellyImageCache::default();
         let palette = Palette::default();
@@ -798,6 +823,29 @@ mod tests {
                 material,
             ))
             .expect("button image");
+
+        assert_eq!(cache.len(), 1);
+        assert!(Arc::ptr_eq(&first.image, &second.image));
+    }
+
+    #[test]
+    fn button_image_cache_keeps_gloss_and_aura_out_of_bitmap_key() {
+        let mut cache = JellyImageCache::default();
+        let palette = Palette::default();
+        let material = JellyMaterialToken::for_tone(JellyTone::Primary, &palette);
+        let mut first_motion = sample_button_motion(0.2);
+        first_motion.gloss_phase = 0.04;
+        first_motion.aura = 0.02;
+        let mut second_motion = first_motion;
+        second_motion.gloss_phase = 0.94;
+        second_motion.aura = 0.72;
+
+        let first = cache
+            .button_image(sample_button_request(320., 66., first_motion, material))
+            .expect("first button image");
+        let second = cache
+            .button_image(sample_button_request(320., 66., second_motion, material))
+            .expect("second button image");
 
         assert_eq!(cache.len(), 1);
         assert!(Arc::ptr_eq(&first.image, &second.image));
@@ -934,6 +982,45 @@ mod tests {
         ));
 
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn switch_image_cache_keeps_active_breath_out_of_bitmap_key() {
+        let mut cache = JellyImageCache::default();
+        let palette = Palette::default();
+        let material = JellyMaterialToken::for_tone(JellyTone::Primary, &palette);
+        let mut first_motion = sample_switch_motion(0.75, 0.2);
+        first_motion.gloss_phase = 0.02;
+        first_motion.rim_pressure = 0.18;
+        first_motion.contact = 0.18;
+        first_motion.aura = 0.08;
+        let mut second_motion = first_motion;
+        second_motion.gloss_phase = 0.98;
+        second_motion.rim_pressure = 0.78;
+        second_motion.contact = 0.72;
+        second_motion.aura = 0.66;
+
+        let first = cache
+            .switch_image(sample_switch_request(
+                142.,
+                52.,
+                first_motion,
+                material,
+                true,
+            ))
+            .expect("first switch image");
+        let second = cache
+            .switch_image(sample_switch_request(
+                142.,
+                52.,
+                second_motion,
+                material,
+                true,
+            ))
+            .expect("second switch image");
+
+        assert_eq!(cache.len(), 1);
+        assert!(Arc::ptr_eq(&first.image, &second.image));
     }
 
     #[test]

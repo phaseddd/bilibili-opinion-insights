@@ -1,11 +1,13 @@
 use std::f32::consts::TAU;
 
 pub const PROGRESS_CHAIN_POINTS: usize = 9;
-pub const VISUAL_MOTION_TICK_MS: u64 = 8;
-pub const VISUAL_MOTION_DT: f32 = VISUAL_MOTION_TICK_MS as f32 / 1000.;
+pub const MIN_VISUAL_FPS: f32 = 60.;
+pub const MIN_VISUAL_FRAME_DT: f32 = 1. / MIN_VISUAL_FPS;
+pub const REFERENCE_VISUAL_FPS: f32 = 120.;
+pub const VISUAL_MOTION_DT: f32 = 1. / REFERENCE_VISUAL_FPS;
 
 const REFERENCE_MOTION_DT: f32 = 0.072;
-const CONTROL_IMPULSE_SECONDS: f32 = 0.52;
+pub const CONTROL_IMPULSE_SECONDS: f32 = 0.52;
 const SWITCH_ACCELERATION: f32 = 34.;
 const SWITCH_MAX_VELOCITY: f32 = 5.8;
 const SWITCH_ENDPOINT_EPS: f32 = 0.04;
@@ -112,7 +114,7 @@ pub struct JellyMotionSnapshot {
 
 impl JellyMotionSnapshot {
     pub fn from_impulse(
-        age_ticks: Option<u64>,
+        age_seconds: Option<f32>,
         motion_tick: u64,
         loading: bool,
         error: bool,
@@ -130,7 +132,7 @@ impl JellyMotionSnapshot {
             0.
         };
 
-        let Some(age_ticks) = age_ticks else {
+        let Some(age_seconds) = age_seconds else {
             return Self {
                 gloss_phase: breath,
                 aura: breath * 0.7,
@@ -139,8 +141,7 @@ impl JellyMotionSnapshot {
             };
         };
 
-        let impulse_ticks = (CONTROL_IMPULSE_SECONDS / VISUAL_MOTION_DT).max(1.);
-        let t = (age_ticks as f32 / impulse_ticks).clamp(0., 1.);
+        let t = (age_seconds / CONTROL_IMPULSE_SECONDS).clamp(0., 1.);
         let decay = (1. - t).powf(1.8);
         let oscillation = (t * TAU * 1.42).sin();
         let rebound = (oscillation * decay).clamp(-0.55, 1.);
