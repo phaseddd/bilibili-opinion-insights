@@ -205,7 +205,6 @@ struct JellySurfaceImageKey {
     pressure_bucket: u8,
     rebound_bucket: i8,
     rim_bucket: u8,
-    gloss_bucket: u8,
     contact_bucket: u8,
     aura_bucket: u8,
     tone: JellyTone,
@@ -414,7 +413,7 @@ impl JellyImageCache {
                 squash_x: 0.,
                 squash_y: 0.,
                 rim_pressure: key.rim_bucket as f32 / 10.,
-                gloss_phase: key.gloss_bucket as f32 / 16.,
+                gloss_phase: if key.active { 0.62 } else { 0.5 },
                 inner_lag: 0.,
                 contact: key.contact_bucket as f32 / 10.,
                 aura: key.aura_bucket as f32 / 10.,
@@ -543,7 +542,6 @@ impl JellySurfaceImageKey {
             pressure_bucket: quantize_unit(request.motion.pressure, 10) as u8,
             rebound_bucket: quantize_signed(request.motion.rebound, 10),
             rim_bucket: quantize_unit(request.motion.rim_pressure, 10) as u8,
-            gloss_bucket: quantize_unit(request.motion.gloss_phase, 16) as u8,
             contact_bucket: quantize_unit(request.motion.contact, 10) as u8,
             aura_bucket: quantize_unit(request.motion.aura, 10) as u8,
             tone: request.tone,
@@ -1178,6 +1176,41 @@ mod tests {
         });
 
         assert_eq!(cache.len(), 4);
+    }
+
+    #[test]
+    fn surface_image_cache_keeps_gloss_phase_out_of_bitmap_key() {
+        let mut cache = JellyImageCache::default();
+        let palette = Palette::default();
+        let material = JellyMaterialToken::for_tone(JellyTone::Primary, &palette);
+        let mut first_motion = sample_button_motion(0.2);
+        first_motion.gloss_phase = 0.02;
+        let mut second_motion = sample_button_motion(0.2);
+        second_motion.gloss_phase = 0.98;
+
+        let first = cache
+            .surface_image(sample_surface_request(
+                980.,
+                42.,
+                first_motion,
+                material,
+                JellySurfaceDensity::Event,
+                true,
+            ))
+            .expect("surface image");
+        let second = cache
+            .surface_image(sample_surface_request(
+                980.,
+                42.,
+                second_motion,
+                material,
+                JellySurfaceDensity::Event,
+                true,
+            ))
+            .expect("surface image");
+
+        assert_eq!(cache.len(), 1);
+        assert!(Arc::ptr_eq(&first.image, &second.image));
     }
 
     fn sample_request(

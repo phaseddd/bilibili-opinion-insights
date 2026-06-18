@@ -1,10 +1,13 @@
+use std::env;
+use std::fs::{OpenOptions, create_dir_all};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
     App, AppContext as _, Application, Bounds, ClickEvent, Context, Entity, FontWeight, Hsla,
@@ -65,6 +68,11 @@ use crate::gui::workers::auth_worker::{
 };
 use crate::gui::workers::collection_worker::{CollectionDraft, spawn_collection_worker};
 
+const GUI_SMOKE_BVIDS_ENV: &str = "BILI_GUI_SMOKE_BVIDS";
+const GUI_SMOKE_OUTPUT_ENV: &str = "BILI_GUI_SMOKE_OUTPUT";
+const EVENT_RENDER_LIMIT_BUSY: usize = 10;
+const EVENT_RENDER_LIMIT_IDLE: usize = 48;
+
 pub fn run() {
     Application::new().run(|cx: &mut App| {
         gpui_component::init(cx);
@@ -94,12 +102,21 @@ struct BiliOpinionGui {
     events: EventState,
     results: ResultState,
     visual: VisualState,
+    perf_logger: GuiPerfLogger,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AppView {
     IdentityGate,
     Workbench,
+}
+
+struct GuiPerfLogger {
+    path: Option<PathBuf>,
+    started_at: Instant,
+    last_emit: Option<Instant>,
+    last_frames: u64,
+    last_slow_frames: u64,
 }
 
 struct FormState {
@@ -153,6 +170,7 @@ impl BiliOpinionGui {
             events,
             results: ResultState::default(),
             visual: VisualState::default(),
+            perf_logger: GuiPerfLogger::from_env(),
         };
         this.start_auth_bootstrap(cx);
         this
@@ -268,6 +286,8 @@ impl BiliOpinionGui {
         self.visual.tick_button_motion(dt);
         self.task.tick_visual_motion(dt);
         self.visual.tick_switch_motion(dt);
+        self.perf_logger
+            .maybe_emit(&self.visual, self.app_view, self.task.phase);
 
         if self.should_animate_visuals() {
             window.request_animation_frame();
@@ -716,13 +736,111 @@ impl BiliOpinionGui {
     }
 }
 
+impl GuiPerfLogger {
+    fn from_env() -> Self {
+        let path = env::var_os("BILI_GUI_FRAME_STATS_PATH")
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty());
+
+        if let Some(path) = path.as_ref() {
+            if let Some(parent) = path.parent() {
+                let _ = create_dir_all(parent);
+            }
+            let _ = std::fs::remove_file(path);
+        }
+
+        Self {
+            path,
+            started_at: Instant::now(),
+            last_emit: None,
+            last_frames: 0,
+            last_slow_frames: 0,
+        }
+    }
+
+    fn maybe_emit(&mut self, visual: &VisualState, view: AppView, phase: TaskPhase) {
+        let Some(path) = self.path.as_ref() else {
+            return;
+        };
+
+        let now = Instant::now();
+        if self
+            .last_emit
+            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(500))
+        {
+            return;
+        }
+
+        let stats = visual.motion_frame_stats();
+        if stats.frames == self.last_frames {
+            return;
+        }
+
+        let frame_delta = stats.frames.saturating_sub(self.last_frames);
+        let slow_delta = stats.slow_frames.saturating_sub(self.last_slow_frames);
+        self.last_emit = Some(now);
+        self.last_frames = stats.frames;
+        self.last_slow_frames = stats.slow_frames;
+
+        let slow_frame_rate = if frame_delta == 0 {
+            0.
+        } else {
+            slow_delta as f32 / frame_delta as f32
+        };
+        let ema_fps = if stats.ema_dt > 0. {
+            1. / stats.ema_dt
+        } else {
+            0.
+        };
+        let elapsed_ms = now.duration_since(self.started_at).as_secs_f32() * 1000.;
+
+        let line = format!(
+            "{{\"elapsedMs\":{:.1},\"view\":\"{}\",\"taskPhase\":\"{}\",\"frames\":{},\"frameDelta\":{},\"slowFrames\":{},\"slowFrameDelta\":{},\"slowFrameRate\":{:.4},\"lastDtMs\":{:.3},\"emaDtMs\":{:.3},\"emaFps\":{:.2},\"maxDtMs\":{:.3}}}\n",
+            elapsed_ms,
+            view.as_str(),
+            phase.as_str(),
+            stats.frames,
+            frame_delta,
+            stats.slow_frames,
+            slow_delta,
+            slow_frame_rate,
+            stats.last_dt * 1000.,
+            stats.ema_dt * 1000.,
+            ema_fps,
+            stats.max_dt * 1000.,
+        );
+
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = file.write_all(line.as_bytes());
+        }
+    }
+}
+
+impl AppView {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::IdentityGate => "identity",
+            Self::Workbench => "workbench",
+        }
+    }
+}
+
 impl FormState {
     fn new(window: &mut Window, cx: &mut Context<BiliOpinionGui>) -> Self {
+        let bvids_default = env::var(GUI_SMOKE_BVIDS_ENV).unwrap_or_default();
+        let output_default =
+            env::var(GUI_SMOKE_OUTPUT_ENV).unwrap_or_else(|_| DEFAULT_OUTPUT_ROOT.to_string());
+
         let bvids_input = cx.new(|cx| {
-            InputState::new(window, cx)
+            let input = InputState::new(window, cx)
                 .multi_line(true)
                 .rows(5)
-                .placeholder("每行一个 BVID 或 Bilibili 视频链接")
+                .placeholder("每行一个 BVID 或 Bilibili 视频链接");
+            if bvids_default.trim().is_empty() {
+                input
+            } else {
+                input.default_value(bvids_default.clone())
+            }
         });
         let cookie_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -732,7 +850,7 @@ impl FormState {
         let output_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(DEFAULT_OUTPUT_ROOT)
-                .default_value(DEFAULT_OUTPUT_ROOT)
+                .default_value(output_default.clone())
         });
 
         Self {
@@ -1363,10 +1481,10 @@ impl BiliOpinionGui {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let options_enabled = !self.task.phase.is_busy();
-        let comments_active = self.task.phase.is_busy() && self.form.collect_comments;
-        let danmaku_active = self.task.phase.is_busy() && self.form.collect_danmaku;
-        let csv_active = self.task.phase.is_busy() && self.form.write_csv;
-        let jsonl_active = self.task.phase.is_busy() && self.form.write_jsonl;
+        let comments_active = false;
+        let danmaku_active = false;
+        let csv_active = false;
+        let jsonl_active = false;
         let comments_motion =
             self.visual
                 .switch_motion(101, self.form.collect_comments, comments_active);
@@ -1423,13 +1541,16 @@ impl BiliOpinionGui {
                 motion: jsonl_motion,
             },
         );
-        let task_active = self.task.phase.is_busy();
-        let bvids_field_image =
-            self.form_surface_image(palette, JellyTone::Primary, 420., 150., task_active);
-        let cookie_field_image =
-            self.form_surface_image(palette, JellyTone::Neutral, 420., 50., false);
-        let output_field_image =
-            self.form_surface_image(palette, JellyTone::Output, 420., 50., task_active);
+        let use_static_field_images = !self.task.phase.is_busy();
+        let bvids_field_image = use_static_field_images
+            .then(|| self.form_surface_image(palette, JellyTone::Primary, 420., 150., false))
+            .flatten();
+        let cookie_field_image = use_static_field_images
+            .then(|| self.form_surface_image(palette, JellyTone::Neutral, 420., 50., false))
+            .flatten();
+        let output_field_image = use_static_field_images
+            .then(|| self.form_surface_image(palette, JellyTone::Output, 420., 50., false))
+            .flatten();
 
         panel(palette)
             .w(relative(0.3))
@@ -1782,15 +1903,14 @@ impl BiliOpinionGui {
         palette: &Palette,
         line: &EventLine,
     ) -> Option<JellySurfaceImage> {
+        if self.task.phase.is_busy() {
+            return None;
+        }
+
         let density = match line.kind {
             EventKind::Output => JellySurfaceDensity::Result,
             _ => JellySurfaceDensity::Event,
         };
-        let active = matches!(
-            line.kind,
-            EventKind::Video | EventKind::Comments | EventKind::Danmaku | EventKind::Output
-        );
-
         self.surface_image_for_kind(
             palette,
             line.kind,
@@ -1801,7 +1921,7 @@ impl BiliOpinionGui {
             } else {
                 42.
             },
-            active,
+            false,
         )
     }
 
@@ -1956,7 +2076,27 @@ impl BiliOpinionGui {
 
     fn render_event_panel(&mut self, palette: &Palette) -> impl IntoElement {
         let dropped = self.events.dropped_count;
-        let event_lines: Vec<_> = self.events.lines.iter().rev().cloned().collect();
+        let render_limit = if self.task.phase.is_busy() {
+            EVENT_RENDER_LIMIT_BUSY
+        } else {
+            EVENT_RENDER_LIMIT_IDLE
+        };
+        let retained = self.events.lines.len();
+        let event_lines: Vec<_> = self
+            .events
+            .lines
+            .iter()
+            .rev()
+            .take(render_limit)
+            .cloned()
+            .collect();
+        let event_counter = if dropped > 0 {
+            format!("显示最近 {} 条 · 已裁剪 {dropped} 条", event_lines.len())
+        } else if retained > event_lines.len() {
+            format!("显示最近 {} 条 · 已保留 {retained} 条", event_lines.len())
+        } else {
+            format!("保留最近 {} 条", EVENT_LIMIT)
+        };
         panel(palette)
             .flex_1()
             .min_h(px(245.))
@@ -1966,13 +2106,12 @@ impl BiliOpinionGui {
                     .items_center()
                     .justify_between()
                     .child(panel_title("事件流", "有边界、可滚动、按类型标记", palette))
-                    .child(div().text_size(px(11.)).text_color(palette.muted).child(
-                        if dropped == 0 {
-                            format!("保留最近 {} 条", EVENT_LIMIT)
-                        } else {
-                            format!("已裁剪 {dropped} 条")
-                        },
-                    )),
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(palette.muted)
+                            .child(event_counter),
+                    ),
             )
             .child(
                 v_flex()
@@ -2017,7 +2156,7 @@ impl BiliOpinionGui {
             136.,
             !self.results.failures.is_empty(),
         );
-        let empty_result_image = if self.results.jobs.is_empty() {
+        let empty_result_image = if self.results.jobs.is_empty() && !self.task.phase.is_busy() {
             self.empty_result_surface_image(palette)
         } else {
             None

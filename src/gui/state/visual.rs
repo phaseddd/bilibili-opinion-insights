@@ -74,6 +74,10 @@ impl MotionFrameBudget {
 }
 
 impl VisualState {
+    pub(crate) fn motion_frame_stats(&self) -> MotionFrameStats {
+        self.motion_frame_budget.stats
+    }
+
     pub(crate) fn begin_motion_frame(&mut self) -> f32 {
         let now = Instant::now();
         let dt = self
@@ -215,6 +219,17 @@ mod tests {
         assert_eq!(dt, VISUAL_MOTION_DT);
         assert_eq!(budget.stats.frames, 1);
         assert_eq!(budget.stats.slow_frames, 0);
+    }
+
+    #[test]
+    fn visual_state_exposes_motion_frame_stats() {
+        let mut visual = VisualState::default();
+
+        let _ = visual.begin_motion_frame();
+
+        let stats = visual.motion_frame_stats();
+        assert_eq!(stats.frames, 1);
+        assert!(stats.ema_dt > 0.);
     }
 
     #[test]

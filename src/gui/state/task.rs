@@ -445,6 +445,17 @@ impl TaskPhase {
         }
     }
 
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Validating => "validating",
+            Self::Running => "running",
+            Self::Cancelling => "cancelling",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+
     pub(crate) fn is_busy(self) -> bool {
         matches!(self, Self::Validating | Self::Running | Self::Cancelling)
     }
