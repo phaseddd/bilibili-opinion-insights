@@ -1,10 +1,22 @@
 //! jelly-bake —— 离线 headless wgpu 烘焙工具。
-//! 移植 jelly-switch 圆角盒胶体 raymarch；按 pressure 烤一组"静止→按下压扁"形变帧。
+//! 移植 jelly-switch 圆角盒胶体 raymarch，离线烤横长厚胶按钮资产。
+//! 当前：遍历 tone（primary/cyan/warning/neutral）各烤一张静止厚胶，
+//! 直接写运行时资产 assets/jelly/button_{tone}_rest.png（primary 即 atlas 当前所用）。
 
 use anyhow::{Result, anyhow};
 use glam::{Mat4, Vec3};
 
-const SIZE: u32 = 512;
+// 输出横长比例匹配 GUI Standard 按钮（360×66 = 60:11），2x 取样保清晰。
+const OUT_W: u32 = 720;
+const OUT_H: u32 = 132;
+
+// 各 tone 的厚胶本征色（饱和纯色，供 raymarch 透光/吸收），贴近 GUI tone 语义。
+const TONES: [(&str, [f32; 3]); 4] = [
+    ("primary", [0.08, 0.5, 1.0]),
+    ("cyan", [0.06, 0.78, 0.86]),
+    ("warning", [1.0, 0.62, 0.12]),
+    ("neutral", [0.62, 0.7, 0.8]),
+];
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -19,7 +31,7 @@ struct JellyUniform {
     squash_z: f32,
     wiggle_x: f32,
     exposure: f32,
-    _pad: [f32; 2],
+    resolution: [f32; 2],
 }
 
 fn main() -> Result<()> {
@@ -54,10 +66,11 @@ async fn run() -> Result<()> {
         )
         .await?;
 
-    // ---- 相机（固定机位）----
+    // ---- 相机（固定机位，aspect 跟随横长输出）----
     let eye = Vec3::new(0.024, 2.7, 1.9);
     let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
-    let proj = Mat4::perspective_rh(26f32.to_radians(), 1.0, 0.1, 10.0);
+    let aspect = OUT_W as f32 / OUT_H as f32;
+    let proj = Mat4::perspective_rh(17f32.to_radians(), aspect, 0.1, 10.0);
     let light = Vec3::new(0.19, -0.24, 0.75).normalize();
 
     let base = JellyUniform {
@@ -71,10 +84,10 @@ async fn run() -> Result<()> {
         squash_z: 0.0,
         wiggle_x: 0.0,
         exposure: 1.5,
-        _pad: [0.0; 2],
+        resolution: [OUT_W as f32, OUT_H as f32],
     };
 
-    // ---- 资源（创建一次，多帧复用）----
+    // ---- 资源 ----
     let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform"),
         size: std::mem::size_of::<JellyUniform>() as u64,
@@ -111,8 +124,8 @@ async fn run() -> Result<()> {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("target"),
         size: wgpu::Extent3d {
-            width: SIZE,
-            height: SIZE,
+            width: OUT_W,
+            height: OUT_H,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -154,30 +167,23 @@ async fn run() -> Result<()> {
     });
 
     let bpp = 4u32;
-    let unpadded = SIZE * bpp;
+    let unpadded = OUT_W * bpp;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let padded = unpadded.div_ceil(align) * align;
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
-        size: (padded * SIZE) as u64,
+        size: (padded * OUT_H) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
 
+    std::fs::create_dir_all("assets/jelly")?;
     std::fs::create_dir_all("tmp")?;
 
-    // ---- pressure 形变序列：press 0→1，胶体压扁变宽变矮 ----
-    let frames = [
-        ("rest", 0.0f32),
-        ("press-33", 0.33),
-        ("press-66", 0.66),
-        ("press-100", 1.0),
-    ];
-    for (name, press) in frames {
+    // 遍历 tone，各烤一张静止厚胶。
+    for (name, color) in TONES {
         let u = JellyUniform {
-            squash_x: press * 0.22,
-            squash_y: press * 0.34,
-            squash_z: press * 0.18,
+            jelly_color: [color[0], color[1], color[2], 1.0],
             ..base
         };
         queue.write_buffer(&uniform_buf, 0, bytemuck::bytes_of(&u));
@@ -215,12 +221,12 @@ async fn run() -> Result<()> {
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded),
-                    rows_per_image: Some(SIZE),
+                    rows_per_image: Some(OUT_H),
                 },
             },
             wgpu::Extent3d {
-                width: SIZE,
-                height: SIZE,
+                width: OUT_W,
+                height: OUT_H,
                 depth_or_array_layers: 1,
             },
         );
@@ -235,39 +241,39 @@ async fn run() -> Result<()> {
         rx.recv()??;
 
         let data = slice.get_mapped_range();
-        let mut pixels = Vec::with_capacity((SIZE * SIZE * bpp) as usize);
-        for row in 0..SIZE {
+        let mut pixels = Vec::with_capacity((OUT_W * OUT_H * bpp) as usize);
+        for row in 0..OUT_H {
             let start = (row * padded) as usize;
             pixels.extend_from_slice(&data[start..start + unpadded as usize]);
         }
         drop(data);
         readback.unmap();
 
-        // rest 帧额外合成到深色 UI 面板，预览贴进 GUI 的融合效果
-        if name == "rest" {
-            let bg = [28u8, 32, 42];
-            let composed: Vec<u8> = pixels
-                .chunks_exact(4)
-                .flat_map(|p| {
-                    let a = p[3] as f32 / 255.0;
-                    [
-                        (p[0] as f32 * a + bg[0] as f32 * (1.0 - a)) as u8,
-                        (p[1] as f32 * a + bg[1] as f32 * (1.0 - a)) as u8,
-                        (p[2] as f32 * a + bg[2] as f32 * (1.0 - a)) as u8,
-                        255,
-                    ]
-                })
-                .collect();
-            image::RgbaImage::from_raw(SIZE, SIZE, composed)
-                .ok_or_else(|| anyhow!("compose failed"))?
-                .save("tmp/jelly-bake-on-ui.png")?;
-        }
+        // tmp 预览：深色 UI 合成，肉眼对比各 tone 厚胶质感。
+        let bg = [28u8, 32, 42];
+        let composed: Vec<u8> = pixels
+            .chunks_exact(4)
+            .flat_map(|p| {
+                let a = p[3] as f32 / 255.0;
+                [
+                    (p[0] as f32 * a + bg[0] as f32 * (1.0 - a)) as u8,
+                    (p[1] as f32 * a + bg[1] as f32 * (1.0 - a)) as u8,
+                    (p[2] as f32 * a + bg[2] as f32 * (1.0 - a)) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        image::RgbaImage::from_raw(OUT_W, OUT_H, composed)
+            .ok_or_else(|| anyhow!("compose failed"))?
+            .save(format!("tmp/jelly-bake-{name}-on-ui.png"))?;
 
-        let out = format!("tmp/jelly-bake-{name}.png");
-        image::RgbaImage::from_raw(SIZE, SIZE, pixels)
+        // 运行时资产（透明背景厚胶），编译期被主 crate include_bytes! 嵌入。
+        let asset = format!("assets/jelly/button_{name}_rest.png");
+        image::RgbaImage::from_raw(OUT_W, OUT_H, pixels)
             .ok_or_else(|| anyhow!("raw buffer -> image failed"))?
-            .save(&out)?;
-        println!("wrote {out}");
+            .save(&asset)?;
+        println!("wrote {asset}");
     }
+
     Ok(())
 }

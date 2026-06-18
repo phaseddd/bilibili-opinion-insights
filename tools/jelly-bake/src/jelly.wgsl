@@ -14,6 +14,7 @@ struct Uniforms {
     squash_z: f32,
     wiggle_x: f32,
     exposure: f32,
+    resolution: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -32,7 +33,7 @@ const AO_STEPS: i32 = 3;
 const AO_RADIUS: f32 = 0.1;
 const AO_INTENSITY: f32 = 0.5;
 const AO_BIAS: f32 = SURF_DIST * 5.0;
-const JELLY_HALFSIZE: vec3<f32> = vec3<f32>(0.35, 0.3, 0.3);
+const JELLY_HALFSIZE: vec3<f32> = vec3<f32>(1.7, 0.4, 0.55);
 const SWITCH_RAIL_LENGTH: f32 = 0.4;
 const GROUND_THICKNESS: f32 = 0.03;
 const GROUND_ROUNDNESS: f32 = 0.02;
@@ -81,7 +82,7 @@ fn jelly_dist(p: vec3<f32>) -> f32 {
     let inv_scale = vec3<f32>(1.0 - u.squash_x, 1.0 + u.squash_y, 1.0 - u.squash_z);
     let local0 = (p - jelly_origin) * inv_scale;
     let local = op_rotate_axis_angle(local0, vec3<f32>(0.0, 0.0, 1.0), u.wiggle_x);
-    return sd_rounded_box3d(op_cheap_bend(local, 0.8), JELLY_HALFSIZE - vec3<f32>(0.1), 0.1);
+    return sd_rounded_box3d(op_cheap_bend(local, 0.0), JELLY_HALFSIZE - vec3<f32>(0.1), 0.1);
 }
 
 struct Hit { dist: f32, is_jelly: bool };
@@ -106,7 +107,7 @@ fn approx_normal(p: vec3<f32>, e: f32) -> vec3<f32> {
     return normalize(n);
 }
 fn get_normal(p: vec3<f32>) -> vec3<f32> {
-    if (abs(p.z) > 0.5 || abs(p.x) > 1.02) { return vec3<f32>(0.0, 1.0, 0.0); }
+    if (abs(p.z) > 0.7 || abs(p.x) > 1.95) { return vec3<f32>(0.0, 1.0, 0.0); }
     return approx_normal(p, 0.0001);
 }
 
@@ -193,7 +194,7 @@ fn raymarch(ray_origin: vec3<f32>, ray_dir: vec3<f32>) -> vec4<f32> {
     }
     // 透明背景资产：地面/背景不输出（alpha=0），只保留胶体本体。
     // 折射环境采样仍用 raymarch_no_jelly（内部走 render_background）。
-    let bb = intersect_box(ray_origin, ray_dir, vec3<f32>(-1.0), vec3<f32>(1.0));
+    let bb = intersect_box(ray_origin, ray_dir, vec3<f32>(-2.1, -1.0, -1.0), vec3<f32>(2.1, 1.0, 1.0));
     if (bb.x < 0.5) { return vec4<f32>(0.0); }
 
     var dist = max(0.0, bb.y);
@@ -251,7 +252,7 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let res = vec2<f32>(512.0, 512.0);
+    let res = u.resolution;
     let uv = frag.xy / res;
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, -(uv.y * 2.0 - 1.0));
     let ray = get_ray(ndc);
