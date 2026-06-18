@@ -15,3 +15,7 @@ mod components {
     pub mod jelly_switch;
     pub mod jelly_task_lane;
 }
+
+mod jelly {
+    pub mod atlas;
+}
