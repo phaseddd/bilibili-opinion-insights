@@ -191,10 +191,10 @@ fn raymarch(ray_origin: vec3<f32>, ray_dir: vec3<f32>) -> vec4<f32> {
         bg_dist = bg_dist + h;
         if (h < SURF_DIST) { break; }
     }
-    let background = render_background(ray_origin, ray_dir, bg_dist);
-
+    // 透明背景资产：地面/背景不输出（alpha=0），只保留胶体本体。
+    // 折射环境采样仍用 raymarch_no_jelly（内部走 render_background）。
     let bb = intersect_box(ray_origin, ray_dir, vec3<f32>(-1.0), vec3<f32>(1.0));
-    if (bb.x < 0.5) { return vec4<f32>(background, 1.0); }
+    if (bb.x < 0.5) { return vec4<f32>(0.0); }
 
     var dist = max(0.0, bb.y);
     for (var i = 0; i < MAX_STEPS; i = i + 1) {
@@ -229,7 +229,7 @@ fn raymarch(ray_origin: vec3<f32>, ray_dir: vec3<f32>) -> vec4<f32> {
         }
         if (dist > bg_dist || dist > MAX_DIST) { break; }
     }
-    return vec4<f32>(background, 1.0);
+    return vec4<f32>(0.0);
 }
 
 // ---- 入口 ----

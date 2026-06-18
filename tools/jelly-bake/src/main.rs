@@ -231,6 +231,26 @@ async fn run() -> Result<()> {
         drop(data);
         readback.unmap();
 
+        // rest 帧额外合成到深色 UI 面板，预览贴进 GUI 的融合效果
+        if name == "rest" {
+            let bg = [28u8, 32, 42];
+            let composed: Vec<u8> = pixels
+                .chunks_exact(4)
+                .flat_map(|p| {
+                    let a = p[3] as f32 / 255.0;
+                    [
+                        (p[0] as f32 * a + bg[0] as f32 * (1.0 - a)) as u8,
+                        (p[1] as f32 * a + bg[1] as f32 * (1.0 - a)) as u8,
+                        (p[2] as f32 * a + bg[2] as f32 * (1.0 - a)) as u8,
+                        255,
+                    ]
+                })
+                .collect();
+            image::RgbaImage::from_raw(SIZE, SIZE, composed)
+                .ok_or_else(|| anyhow!("compose failed"))?
+                .save("tmp/jelly-bake-on-ui.png")?;
+        }
+
         let out = format!("tmp/jelly-bake-{name}.png");
         image::RgbaImage::from_raw(SIZE, SIZE, pixels)
             .ok_or_else(|| anyhow!("raw buffer -> image failed"))?
