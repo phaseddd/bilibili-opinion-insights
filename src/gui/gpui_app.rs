@@ -328,12 +328,15 @@ impl BiliOpinionGui {
     ) -> Option<JellyButtonImage> {
         let jelly_tone = button_tone(tone);
 
-        // 最小闭环：Primary tone 优先贴离线 wgpu 烤的厚胶资产，端到端验证
-        // 「离线 PNG → RenderImage → paint_image」通路（方案 02 / 05 第 1 步）。其余
-        // tone 暂走原有 CPU 栅格化路径，待烘焙产线补齐各 tone 与横长比例后统一替换。
-        if matches!(jelly_tone, JellyTone::Primary)
-            && let Some(image) = crate::gui::jelly::atlas::button_primary_rest()
-        {
+        // 离线烤的横长厚胶资产：4 个 action tone 各有对应贴图，优先于 CPU 栅格化。
+        use crate::gui::jelly::atlas::ButtonAtlasTone;
+        let atlas_tone = match jelly_tone {
+            JellyTone::Cyan => ButtonAtlasTone::Cyan,
+            JellyTone::Warning => ButtonAtlasTone::Warning,
+            JellyTone::Neutral => ButtonAtlasTone::Neutral,
+            _ => ButtonAtlasTone::Primary,
+        };
+        if let Some(image) = crate::gui::jelly::atlas::button_rest(atlas_tone) {
             return Some(JellyButtonImage { image });
         }
 

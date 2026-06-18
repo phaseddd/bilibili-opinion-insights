@@ -537,11 +537,14 @@ pub fn jelly_action_button(
                     div()
                         .truncate()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(
+                        .text_color(if has_button_image {
+                            // 厚胶贴图上用亮色文字保证对比度（深色 tone 文字压厚胶会糊）
+                            hsla(0., 0., 1., if config.enabled { 0.95 } else { 0.5 })
+                        } else {
                             material
                                 .text
-                                .opacity(if config.enabled { 1.0 } else { 0.58 }),
-                        )
+                                .opacity(if config.enabled { 1.0 } else { 0.58 })
+                        })
                         .text_size(px(metrics.text_size))
                         .child(SharedString::from(label)),
                 ),
