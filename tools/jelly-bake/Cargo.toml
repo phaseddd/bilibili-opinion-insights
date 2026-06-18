@@ -1,0 +1,20 @@
+# 离线 jelly 烘焙工具（独立于主 crate，运行时不被依赖）。
+# 用 headless wgpu 跑 raymarch shader，把厚胶按钮/开关烤成位图资产。
+# 详见 doc/claude-code/02_jelly_rendering_architecture.md
+[package]
+name = "jelly-bake"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# 禁 dx12 后端：wgpu-hal 24 的 dx12 与当前 windows crate 不兼容（编译失败）。
+# default-features=false 去掉 dx12/metal/webgpu，只留 wgsl 前端；
+# Windows 上 Vulkan 后端由 wgpu 的 target.cfg(windows) 自动启用，无需 feature。
+# 离线烤图走 Vulkan 即可，主 crate 运行时仍是 GPUI 自己的 D3D11，互不影响。
+wgpu = { version = "24", default-features = false, features = ["wgsl"] }
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+glam = "0.29"
+anyhow = "1"
