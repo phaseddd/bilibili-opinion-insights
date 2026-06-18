@@ -10,6 +10,7 @@ struct Uniforms {
     jelly_color: vec4<f32>,
     progress: f32,
     squash_x: f32,
+    squash_y: f32,
     squash_z: f32,
     wiggle_x: f32,
     exposure: f32,
@@ -77,7 +78,7 @@ fn main_scene_dist(p: vec3<f32>) -> f32 {
 // 按钮版：胶体居中（不像 switch 沿轨道滑），保留 squash/wiggle 形变接口
 fn jelly_dist(p: vec3<f32>) -> f32 {
     let jelly_origin = vec3<f32>(0.0, JELLY_HALFSIZE.y * 0.5, 0.0);
-    let inv_scale = vec3<f32>(1.0 - u.squash_x, 1.0, 1.0 - u.squash_z);
+    let inv_scale = vec3<f32>(1.0 - u.squash_x, 1.0 + u.squash_y, 1.0 - u.squash_z);
     let local0 = (p - jelly_origin) * inv_scale;
     let local = op_rotate_axis_angle(local0, vec3<f32>(0.0, 0.0, 1.0), u.wiggle_x);
     return sd_rounded_box3d(op_cheap_bend(local, 0.8), JELLY_HALFSIZE - vec3<f32>(0.1), 0.1);

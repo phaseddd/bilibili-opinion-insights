@@ -1,9 +1,8 @@
 //! jelly-bake —— 离线 headless wgpu 烘焙工具。
-//! spike 0-B: 移植 jelly-switch 圆角盒胶体 raymarch，固定机位烤一张静止厚胶按钮。
+//! 移植 jelly-switch 圆角盒胶体 raymarch；按 pressure 烤一组"静止→按下压扁"形变帧。
 
 use anyhow::{Result, anyhow};
 use glam::{Mat4, Vec3};
-use std::path::Path;
 
 const SIZE: u32 = 512;
 
@@ -16,10 +15,11 @@ struct JellyUniform {
     jelly_color: [f32; 4],
     progress: f32,
     squash_x: f32,
+    squash_y: f32,
     squash_z: f32,
     wiggle_x: f32,
     exposure: f32,
-    _pad: [f32; 3],
+    _pad: [f32; 2],
 }
 
 fn main() -> Result<()> {
@@ -50,33 +50,33 @@ async fn run() -> Result<()> {
         )
         .await?;
 
-    // ---- 相机（jelly-switch/camera.ts 的固定机位）----
+    // ---- 相机（固定机位）----
     let eye = Vec3::new(0.024, 2.7, 1.9);
     let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
     let proj = Mat4::perspective_rh(26f32.to_radians(), 1.0, 0.1, 10.0);
     let light = Vec3::new(0.19, -0.24, 0.75).normalize();
 
-    let uniform = JellyUniform {
+    let base = JellyUniform {
         view_inv: view.inverse().to_cols_array_2d(),
         proj_inv: proj.inverse().to_cols_array_2d(),
         light_dir: [light.x, light.y, light.z, 0.0],
-        jelly_color: [0.08, 0.5, 1.0, 1.0], // 青蓝按钮
+        jelly_color: [0.08, 0.5, 1.0, 1.0],
         progress: 1.0,
         squash_x: 0.0,
+        squash_y: 0.0,
         squash_z: 0.0,
         wiggle_x: 0.0,
         exposure: 1.5,
-        _pad: [0.0; 3],
+        _pad: [0.0; 2],
     };
 
+    // ---- 资源（创建一次，多帧复用）----
     let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform"),
         size: std::mem::size_of::<JellyUniform>() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    queue.write_buffer(&uniform_buf, 0, bytemuck::bytes_of(&uniform));
-
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
@@ -103,8 +103,6 @@ async fn run() -> Result<()> {
         bind_group_layouts: &[&bgl],
         push_constant_ranges: &[],
     });
-
-    // ---- 离屏 target ----
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("target"),
@@ -117,7 +115,6 @@ async fn run() -> Result<()> {
         view_formats: &[],
     });
     let view_tex = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("jelly"),
         source: wgpu::ShaderSource::Wgsl(include_str!("jelly.wgsl").into()),
@@ -148,7 +145,6 @@ async fn run() -> Result<()> {
         cache: None,
     });
 
-    // ---- readback ----
     let bpp = 4u32;
     let unpadded = SIZE * bpp;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -160,68 +156,86 @@ async fn run() -> Result<()> {
         mapped_at_creation: false,
     });
 
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-    {
-        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("rp"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view_tex,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        rp.set_pipeline(&pipeline);
-        rp.set_bind_group(0, &bind_group, &[]);
-        rp.draw(0..3, 0..1);
-    }
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded),
-                rows_per_image: Some(SIZE),
-            },
-        },
-        wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
-    );
-    queue.submit(Some(encoder.finish()));
-
-    let slice = readback.slice(..);
-    let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |res| {
-        let _ = tx.send(res);
-    });
-    device.poll(wgpu::Maintain::Wait);
-    rx.recv()??;
-
-    let data = slice.get_mapped_range();
-    let mut pixels = Vec::with_capacity((SIZE * SIZE * bpp) as usize);
-    for row in 0..SIZE {
-        let start = (row * padded) as usize;
-        pixels.extend_from_slice(&data[start..start + unpadded as usize]);
-    }
-    drop(data);
-    readback.unmap();
-
     std::fs::create_dir_all("tmp")?;
-    let out = Path::new("tmp/jelly-bake-0b.png");
-    image::RgbaImage::from_raw(SIZE, SIZE, pixels)
-        .ok_or_else(|| anyhow!("raw buffer -> image failed"))?
-        .save(out)?;
-    println!("wrote {}", out.display());
+
+    // ---- pressure 形变序列：press 0→1，胶体压扁变宽变矮 ----
+    let frames = [
+        ("rest", 0.0f32),
+        ("press-33", 0.33),
+        ("press-66", 0.66),
+        ("press-100", 1.0),
+    ];
+    for (name, press) in frames {
+        let u = JellyUniform {
+            squash_x: press * 0.22,
+            squash_y: press * 0.34,
+            squash_z: press * 0.18,
+            ..base
+        };
+        queue.write_buffer(&uniform_buf, 0, bytemuck::bytes_of(&u));
+
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rp"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view_tex,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rp.set_pipeline(&pipeline);
+            rp.set_bind_group(0, &bind_group, &[]);
+            rp.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(SIZE),
+                },
+            },
+            wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+        );
+        queue.submit(Some(encoder.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+        device.poll(wgpu::Maintain::Wait);
+        rx.recv()??;
+
+        let data = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((SIZE * SIZE * bpp) as usize);
+        for row in 0..SIZE {
+            let start = (row * padded) as usize;
+            pixels.extend_from_slice(&data[start..start + unpadded as usize]);
+        }
+        drop(data);
+        readback.unmap();
+
+        let out = format!("tmp/jelly-bake-{name}.png");
+        image::RgbaImage::from_raw(SIZE, SIZE, pixels)
+            .ok_or_else(|| anyhow!("raw buffer -> image failed"))?
+            .save(&out)?;
+        println!("wrote {out}");
+    }
     Ok(())
 }
