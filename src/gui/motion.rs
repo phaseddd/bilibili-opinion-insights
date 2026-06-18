@@ -1,10 +1,13 @@
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
-pub const PROGRESS_CHAIN_POINTS: usize = 9;
+pub const PROGRESS_CHAIN_POINTS: usize = 17;
 pub const MIN_VISUAL_FPS: f32 = 60.;
 pub const MIN_VISUAL_FRAME_DT: f32 = 1. / MIN_VISUAL_FPS;
 pub const REFERENCE_VISUAL_FPS: f32 = 120.;
 pub const VISUAL_MOTION_DT: f32 = 1. / REFERENCE_VISUAL_FPS;
+
+type ProgressChainPoints = [(f32, f32); PROGRESS_CHAIN_POINTS];
+type ChainGeometry = (ProgressChainPoints, ProgressChainPoints);
 
 const REFERENCE_MOTION_DT: f32 = 0.072;
 pub const CONTROL_IMPULSE_SECONDS: f32 = 0.52;
@@ -403,13 +406,49 @@ pub struct JellyProgressMotionState {
     compression: f32,
     cap_rebound: f32,
     phase_offset: f32,
-    chain_offsets: [f32; PROGRESS_CHAIN_POINTS],
-    chain_velocity: [f32; PROGRESS_CHAIN_POINTS],
+    chain: JellyProgressPointChain,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct JellyProgressChainSnapshot {
     pub offsets: [f32; PROGRESS_CHAIN_POINTS],
+    pub positions: [(f32, f32); PROGRESS_CHAIN_POINTS],
+    pub normals: [(f32, f32); PROGRESS_CHAIN_POINTS],
+    pub control_points: [(f32, f32); PROGRESS_CHAIN_POINTS],
+}
+
+impl JellyProgressChainSnapshot {
+    #[cfg(test)]
+    pub fn straight() -> Self {
+        Self::from_offsets([0.; PROGRESS_CHAIN_POINTS])
+    }
+
+    #[cfg(test)]
+    pub fn from_offsets(offsets: [f32; PROGRESS_CHAIN_POINTS]) -> Self {
+        let mut positions = [(0., 0.); PROGRESS_CHAIN_POINTS];
+        for idx in 0..PROGRESS_CHAIN_POINTS {
+            let t = idx as f32 / (PROGRESS_CHAIN_POINTS - 1) as f32;
+            positions[idx] = (t, offsets[idx].clamp(-0.56, 0.38));
+        }
+        let (normals, control_points) = chain_geometry_from_positions(positions);
+
+        Self {
+            offsets,
+            positions,
+            normals,
+            control_points,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct JellyProgressPointChain {
+    pos: [(f32, f32); PROGRESS_CHAIN_POINTS],
+    prev: [(f32, f32); PROGRESS_CHAIN_POINTS],
+    normal: [(f32, f32); PROGRESS_CHAIN_POINTS],
+    control_points: [(f32, f32); PROGRESS_CHAIN_POINTS],
+    inv_mass: [f32; PROGRESS_CHAIN_POINTS],
+    initialized: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -440,8 +479,7 @@ impl Default for JellyProgressMotionState {
             compression: 0.,
             cap_rebound: 0.,
             phase_offset: 0.,
-            chain_offsets: [0.; PROGRESS_CHAIN_POINTS],
-            chain_velocity: [0.; PROGRESS_CHAIN_POINTS],
+            chain: JellyProgressPointChain::default(),
         }
     }
 }
@@ -456,8 +494,7 @@ impl JellyProgressMotionState {
         self.compression = 0.;
         self.cap_rebound = 0.;
         self.phase_offset = 0.;
-        self.chain_offsets = [0.; PROGRESS_CHAIN_POINTS];
-        self.chain_velocity = [0.; PROGRESS_CHAIN_POINTS];
+        self.chain.reset();
     }
 
     pub fn set_target_percent(&mut self, percent: f32) {
@@ -598,9 +635,7 @@ impl JellyProgressMotionState {
             contact: (pressure * 0.62 + velocity_energy * 0.26 + self.pulse * 0.12).clamp(0., 1.),
             aura: (self.pulse * 0.38 + active_wave * 0.2 + velocity_energy * 0.2).clamp(0., 1.),
             error_shake,
-            chain: JellyProgressChainSnapshot {
-                offsets: self.chain_offsets,
-            },
+            chain: self.chain.snapshot(),
         }
     }
 
@@ -611,75 +646,340 @@ impl JellyProgressMotionState {
             || self.pulse > 0.012
             || self.compression > 0.012
             || self.cap_rebound.abs() > 0.012
-            || self
-                .chain_offsets
-                .iter()
-                .chain(self.chain_velocity.iter())
-                .any(|value| value.abs() > 0.006)
+            || self.chain.is_active()
     }
 
     fn inject_chain_impulse(&mut self, delta: f32, impulse: f32) {
-        let direction = delta.signum();
-        for idx in 1..PROGRESS_CHAIN_POINTS - 1 {
-            let t = idx as f32 / (PROGRESS_CHAIN_POINTS - 1) as f32;
-            let arch = (std::f32::consts::PI * t).sin().max(0.);
-            let tail = t.powf(1.4);
-            self.chain_velocity[idx] += (-direction * impulse * arch * 0.92
-                + direction * impulse * tail * 0.18)
-                .clamp(-0.9, 0.9);
-        }
+        self.chain.inject_progress_impulse(delta, impulse);
     }
 
     fn inject_chain_settle(&mut self, impulse: f32) {
-        for idx in 1..PROGRESS_CHAIN_POINTS - 1 {
-            let t = idx as f32 / (PROGRESS_CHAIN_POINTS - 1) as f32;
-            let arch = (std::f32::consts::PI * t).sin().max(0.);
-            self.chain_velocity[idx] = (self.chain_velocity[idx] + impulse * arch).clamp(-0.8, 0.8);
-        }
+        self.chain.inject_settle_impulse(impulse);
     }
 
     fn tick_chain(&mut self, phase: ProgressMotionPhase, velocity_energy: f32, dt: f32) {
-        let live_factor = if phase.is_live() { 1. } else { 0.45 };
-        let damping = match phase {
-            ProgressMotionPhase::Completed => 8.6,
-            ProgressMotionPhase::Failed => 9.2,
-            ProgressMotionPhase::Cancelling => 9.8,
-            ProgressMotionPhase::Idle => 10.,
-            ProgressMotionPhase::Validating | ProgressMotionPhase::Running => 7.4,
+        let drive = ChainDrive {
+            phase,
+            display: self.follow.value,
+            velocity_energy,
+            compression: self.compression,
+            cap_rebound: self.cap_rebound,
+            pulse: self.pulse,
+            frame_scale: 1.,
         };
-        let compression =
-            (self.compression + self.pulse * 0.36 + velocity_energy * 0.28).clamp(0., 1.);
+        self.chain.tick(drive, dt);
+    }
+}
+
+impl Default for JellyProgressPointChain {
+    fn default() -> Self {
+        let mut chain = Self {
+            pos: [(0., 0.); PROGRESS_CHAIN_POINTS],
+            prev: [(0., 0.); PROGRESS_CHAIN_POINTS],
+            normal: [(0., 1.); PROGRESS_CHAIN_POINTS],
+            control_points: [(0., 0.); PROGRESS_CHAIN_POINTS],
+            inv_mass: [1.; PROGRESS_CHAIN_POINTS],
+            initialized: false,
+        };
+        chain.reset();
+        chain
+    }
+}
+
+impl JellyProgressPointChain {
+    fn reset(&mut self) {
+        for idx in 0..PROGRESS_CHAIN_POINTS {
+            let t = idx as f32 / (PROGRESS_CHAIN_POINTS - 1) as f32;
+            self.pos[idx] = (t, 0.);
+            self.prev[idx] = self.pos[idx];
+            self.inv_mass[idx] = if idx == 0 || idx == PROGRESS_CHAIN_POINTS - 1 {
+                0.
+            } else {
+                1.
+            };
+        }
+        self.recompute_geometry();
+        self.initialized = true;
+    }
+
+    fn snapshot(self) -> JellyProgressChainSnapshot {
+        let mut offsets = [0.; PROGRESS_CHAIN_POINTS];
+        for (idx, offset) in offsets.iter_mut().enumerate() {
+            *offset = self.pos[idx].1.clamp(-0.56, 0.38);
+        }
+
+        JellyProgressChainSnapshot {
+            offsets,
+            positions: self.pos,
+            normals: self.normal,
+            control_points: self.control_points,
+        }
+    }
+
+    fn is_active(self) -> bool {
+        self.pos.iter().zip(self.prev.iter()).any(|(pos, prev)| {
+            pos.1.abs() > 0.006
+                || (pos.0 - prev.0).abs() > 0.0004
+                || (pos.1 - prev.1).abs() > 0.0004
+        })
+    }
+
+    fn inject_progress_impulse(&mut self, delta: f32, impulse: f32) {
+        self.ensure_initialized();
+        let direction = delta.signum();
+        for idx in 1..PROGRESS_CHAIN_POINTS - 1 {
+            let t = chain_t(idx);
+            let arch = (PI * t).sin().max(0.);
+            let tail = t.powf(1.35);
+            let vertical = (-direction * impulse * arch * 0.082
+                + direction * impulse * tail * 0.016)
+                .clamp(-0.11, 0.11);
+            let lateral = direction * impulse * arch * (t - 0.5) * 0.018;
+            self.push_velocity(idx, lateral, vertical);
+        }
+    }
+
+    fn inject_settle_impulse(&mut self, impulse: f32) {
+        self.ensure_initialized();
+        for idx in 1..PROGRESS_CHAIN_POINTS - 1 {
+            let t = chain_t(idx);
+            let arch = (PI * t).sin().max(0.);
+            self.push_velocity(idx, 0., (impulse * arch * 0.11).clamp(-0.09, 0.09));
+        }
+    }
+
+    fn tick(&mut self, mut drive: ChainDrive, dt: f32) {
+        self.ensure_initialized();
+        let dt = dt.clamp(0.001, 0.05);
+        let substeps = (dt / 0.006).ceil().clamp(1., 8.) as usize;
+        let step_dt = dt / substeps as f32;
+        drive.display = drive.display.clamp(0., 1.);
+        drive.velocity_energy = drive.velocity_energy.clamp(0., 1.);
+        drive.compression = drive.compression.clamp(0., 1.);
+        drive.cap_rebound = drive.cap_rebound.clamp(-1., 1.);
+        drive.pulse = drive.pulse.clamp(0., 1.);
+        drive.frame_scale = (step_dt / VISUAL_MOTION_DT).clamp(0.35, 1.15);
+
+        for _ in 0..substeps {
+            self.integrate(drive);
+            for _ in 0..5 {
+                self.pin_endpoints();
+                self.project_distance(0.72);
+                self.project_bending(drive);
+                self.flatten_ends(0.26);
+            }
+            self.pin_endpoints();
+            self.clamp_shape();
+        }
+
+        self.recompute_geometry();
+    }
+
+    fn ensure_initialized(&mut self) {
+        if !self.initialized {
+            self.reset();
+        }
+    }
+
+    fn integrate(&mut self, drive: ChainDrive) {
+        let drag = match drive.phase {
+            ProgressMotionPhase::Validating | ProgressMotionPhase::Running => 0.88,
+            ProgressMotionPhase::Completed => 0.82,
+            ProgressMotionPhase::Failed | ProgressMotionPhase::Cancelling => 0.8,
+            ProgressMotionPhase::Idle => 0.78,
+        };
+        let spring_y = match drive.phase {
+            ProgressMotionPhase::Validating | ProgressMotionPhase::Running => 0.27,
+            ProgressMotionPhase::Completed => 0.21,
+            ProgressMotionPhase::Failed | ProgressMotionPhase::Cancelling => 0.24,
+            ProgressMotionPhase::Idle => 0.18,
+        } * drive.frame_scale;
+        let spring_x = 0.16 * drive.frame_scale;
 
         for idx in 1..PROGRESS_CHAIN_POINTS - 1 {
-            let t = idx as f32 / (PROGRESS_CHAIN_POINTS - 1) as f32;
-            let arch = (std::f32::consts::PI * t).sin().max(0.);
-            let center_bias = 1. - (2. * (t - 0.5).abs()).clamp(0., 1.);
-            let target = match phase {
-                ProgressMotionPhase::Failed => arch * (0.035 + compression * 0.045),
-                ProgressMotionPhase::Cancelling => arch * (0.02 + compression * 0.035),
-                _ => -arch * (0.045 + compression * 0.15) * live_factor,
-            } + self.cap_rebound * center_bias * 0.025;
-            let spring = (target - self.chain_offsets[idx]) * 24.;
-            let damp = -self.chain_velocity[idx] * damping;
-            self.chain_velocity[idx] =
-                (self.chain_velocity[idx] + (spring + damp) * dt).clamp(-1.2, 1.2);
-            self.chain_offsets[idx] =
-                (self.chain_offsets[idx] + self.chain_velocity[idx] * dt).clamp(-0.44, 0.28);
+            let t = chain_t(idx);
+            let current = self.pos[idx];
+            let previous = self.prev[idx];
+            let target = drive.target_for_point(t);
+            let vx = (current.0 - previous.0) * drag;
+            let vy = (current.1 - previous.1) * drag;
+            self.prev[idx] = current;
+            self.pos[idx] = (
+                current.0 + vx + (target.0 - current.0) * spring_x,
+                current.1 + vy + (target.1 - current.1) * spring_y,
+            );
         }
+    }
 
-        for _ in 0..2 {
-            let previous = self.chain_offsets;
-            for idx in 1..PROGRESS_CHAIN_POINTS - 1 {
-                let neighbor_average = (previous[idx - 1] + previous[idx + 1]) * 0.5;
-                self.chain_offsets[idx] =
-                    (self.chain_offsets[idx] * 0.78 + neighbor_average * 0.22).clamp(-0.44, 0.28);
+    fn project_distance(&mut self, strength: f32) {
+        let rest_len = 1. / (PROGRESS_CHAIN_POINTS - 1) as f32;
+        for idx in 0..PROGRESS_CHAIN_POINTS - 1 {
+            let a = self.pos[idx];
+            let b = self.pos[idx + 1];
+            let delta = (b.0 - a.0, b.1 - a.1);
+            let len = (delta.0 * delta.0 + delta.1 * delta.1).sqrt();
+            if len <= 0.0001 {
+                continue;
             }
+            let w_a = self.inv_mass[idx];
+            let w_b = self.inv_mass[idx + 1];
+            let weight_sum = w_a + w_b;
+            if weight_sum <= 0. {
+                continue;
+            }
+            let correction = ((len - rest_len) / len) * strength.clamp(0., 1.);
+            let offset = (delta.0 * correction, delta.1 * correction);
+            self.pos[idx].0 += offset.0 * (w_a / weight_sum);
+            self.pos[idx].1 += offset.1 * (w_a / weight_sum);
+            self.pos[idx + 1].0 -= offset.0 * (w_b / weight_sum);
+            self.pos[idx + 1].1 -= offset.1 * (w_b / weight_sum);
         }
+    }
 
-        self.chain_offsets[0] = 0.;
-        self.chain_offsets[PROGRESS_CHAIN_POINTS - 1] = 0.;
-        self.chain_velocity[0] = 0.;
-        self.chain_velocity[PROGRESS_CHAIN_POINTS - 1] = 0.;
+    fn project_bending(&mut self, drive: ChainDrive) {
+        let previous = self.pos;
+        let strength = match drive.phase {
+            ProgressMotionPhase::Validating | ProgressMotionPhase::Running => 0.055,
+            ProgressMotionPhase::Completed => 0.075,
+            ProgressMotionPhase::Failed | ProgressMotionPhase::Cancelling => 0.07,
+            ProgressMotionPhase::Idle => 0.09,
+        };
+        for idx in 1..PROGRESS_CHAIN_POINTS - 1 {
+            let t = chain_t(idx);
+            let arch = (PI * t).sin().max(0.);
+            let average = (
+                (previous[idx - 1].0 + previous[idx + 1].0) * 0.5,
+                (previous[idx - 1].1 + previous[idx + 1].1) * 0.5,
+            );
+            let local_strength = (strength * (0.65 + arch * 0.55)).clamp(0., 0.14);
+            self.pos[idx].0 = motion_lerp(self.pos[idx].0, average.0, local_strength * 0.45);
+            self.pos[idx].1 = motion_lerp(self.pos[idx].1, average.1, local_strength);
+        }
+    }
+
+    fn flatten_ends(&mut self, strength: f32) {
+        let strength = strength.clamp(0., 1.);
+        for idx in [1, 2, PROGRESS_CHAIN_POINTS - 3, PROGRESS_CHAIN_POINTS - 2] {
+            let t = chain_t(idx);
+            let edge = (1. - (2. * (t - 0.5).abs()).clamp(0., 1.)).clamp(0., 1.);
+            let local = strength * (1. - edge).max(0.35);
+            self.pos[idx].1 = motion_lerp(self.pos[idx].1, 0., local);
+            self.pos[idx].0 = motion_lerp(self.pos[idx].0, t, local * 0.6);
+        }
+    }
+
+    fn pin_endpoints(&mut self) {
+        self.pos[0] = (0., 0.);
+        self.pos[PROGRESS_CHAIN_POINTS - 1] = (1., 0.);
+        self.prev[0] = self.pos[0];
+        self.prev[PROGRESS_CHAIN_POINTS - 1] = self.pos[PROGRESS_CHAIN_POINTS - 1];
+    }
+
+    fn clamp_shape(&mut self) {
+        for idx in 1..PROGRESS_CHAIN_POINTS - 1 {
+            let t = chain_t(idx);
+            self.pos[idx].0 = self.pos[idx].0.clamp(t - 0.045, t + 0.045);
+            self.pos[idx].1 = self.pos[idx].1.clamp(-0.56, 0.38);
+        }
+    }
+
+    fn recompute_geometry(&mut self) {
+        let (normal, control_points) = chain_geometry_from_positions(self.pos);
+        self.normal = normal;
+        self.control_points = control_points;
+    }
+
+    fn push_velocity(&mut self, idx: usize, dx: f32, dy: f32) {
+        self.prev[idx].0 = (self.prev[idx].0 - dx).clamp(-0.08, 1.08);
+        self.prev[idx].1 = (self.prev[idx].1 - dy).clamp(-0.62, 0.46);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ChainDrive {
+    phase: ProgressMotionPhase,
+    display: f32,
+    velocity_energy: f32,
+    compression: f32,
+    cap_rebound: f32,
+    pulse: f32,
+    frame_scale: f32,
+}
+
+impl ChainDrive {
+    fn target_for_point(self, t: f32) -> (f32, f32) {
+        let arch = (PI * t).sin().max(0.);
+        let center_bias = 1. - (2. * (t - 0.5).abs()).clamp(0., 1.);
+        let live_factor = if self.phase.is_live() { 1. } else { 0.45 };
+        let compression =
+            (self.compression + self.pulse * 0.34 + self.velocity_energy * 0.28).clamp(0., 1.);
+        let lift = match self.phase {
+            ProgressMotionPhase::Failed => arch * (0.034 + compression * 0.072),
+            ProgressMotionPhase::Cancelling => arch * (0.02 + compression * 0.055),
+            _ => -arch * (0.052 + compression * 0.185) * live_factor,
+        };
+        let rebound = self.cap_rebound * center_bias * (0.028 + self.velocity_energy * 0.015);
+        let cap_follow = (self.display - t).clamp(-0.18, 0.18) * arch * 0.015;
+        let x_drag = self.cap_rebound * arch * (t - 0.5) * 0.018 - cap_follow;
+
+        (
+            (t + x_drag).clamp(0., 1.),
+            (lift + rebound).clamp(-0.5, 0.34),
+        )
+    }
+}
+
+fn chain_geometry_from_positions(positions: ProgressChainPoints) -> ChainGeometry {
+    let mut normals = [(0., 1.); PROGRESS_CHAIN_POINTS];
+    let mut control_points = [(0., 0.); PROGRESS_CHAIN_POINTS];
+    for idx in 0..PROGRESS_CHAIN_POINTS {
+        let tangent = if idx == 0 {
+            (
+                positions[1].0 - positions[0].0,
+                positions[1].1 - positions[0].1,
+            )
+        } else if idx == PROGRESS_CHAIN_POINTS - 1 {
+            (
+                positions[idx].0 - positions[idx - 1].0,
+                positions[idx].1 - positions[idx - 1].1,
+            )
+        } else {
+            (
+                positions[idx + 1].0 - positions[idx - 1].0,
+                positions[idx + 1].1 - positions[idx - 1].1,
+            )
+        };
+        normals[idx] = normalize_2d((-tangent.1, tangent.0));
+    }
+
+    for idx in 0..PROGRESS_CHAIN_POINTS - 1 {
+        let a = positions[idx];
+        let b = positions[idx + 1];
+        let tangent = (b.0 - a.0, b.1 - a.1);
+        control_points[idx] = (
+            (a.0 + b.0) * 0.5 + tangent.0 * 0.04,
+            (a.1 + b.1) * 0.5 + tangent.1 * 0.04,
+        );
+    }
+    control_points[PROGRESS_CHAIN_POINTS - 1] = positions[PROGRESS_CHAIN_POINTS - 1];
+
+    (normals, control_points)
+}
+
+fn chain_t(idx: usize) -> f32 {
+    idx as f32 / (PROGRESS_CHAIN_POINTS - 1) as f32
+}
+
+fn motion_lerp(start: f32, end: f32, t: f32) -> f32 {
+    start + (end - start) * t.clamp(0., 1.)
+}
+
+fn normalize_2d(vector: (f32, f32)) -> (f32, f32) {
+    let len = (vector.0 * vector.0 + vector.1 * vector.1).sqrt();
+    if len > 0.0001 {
+        (vector.0 / len, vector.1 / len)
+    } else {
+        (0., 1.)
     }
 }
 

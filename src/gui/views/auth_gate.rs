@@ -135,11 +135,7 @@ pub(crate) fn auth_risk_block(session: &SessionMode, palette: &Palette) -> impl 
         )
 }
 
-pub(crate) fn auth_lifecycle_block(
-    auth: &AuthState,
-    palette: &Palette,
-    motion_tick: u64,
-) -> impl IntoElement {
+pub(crate) fn auth_lifecycle_block(auth: &AuthState, palette: &Palette) -> impl IntoElement {
     h_flex()
         .w_full()
         .gap(px(10.))
@@ -156,7 +152,6 @@ pub(crate) fn auth_lifecycle_block(
             ),
             auth.status_kind(),
             palette,
-            motion_tick,
         ))
         .child(auth_lifecycle_chip(
             "2",
@@ -164,7 +159,6 @@ pub(crate) fn auth_lifecycle_block(
             auth.should_show_qr(),
             auth.status_kind(),
             palette,
-            motion_tick.wrapping_add(7),
         ))
         .child(auth_lifecycle_chip(
             "3",
@@ -176,7 +170,6 @@ pub(crate) fn auth_lifecycle_block(
                 EventKind::System
             },
             palette,
-            motion_tick.wrapping_add(14),
         ))
 }
 
@@ -186,14 +179,12 @@ fn auth_lifecycle_chip(
     active: bool,
     kind: EventKind,
     palette: &Palette,
-    motion_tick: u64,
 ) -> impl IntoElement {
     let color = event_color(kind, palette);
-    let pulse = if active {
-        wave_between(motion_tick, 0.18, 0.08, 0.2)
-    } else {
-        0.0
-    };
+    let border_alpha = if active { 0.42 } else { 0.12 };
+    let fill_alpha = if active { 0.14 } else { 0.035 };
+    let step_fill_alpha = if active { 0.22 } else { 0.06 };
+    let step_border_alpha = if active { 0.44 } else { 0.18 };
 
     h_flex()
         .flex_1()
@@ -203,14 +194,11 @@ fn auth_lifecycle_chip(
         .p(px(10.))
         .rounded(px(18.))
         .border_1()
-        .border_color(color.opacity(if active { 0.24 + pulse } else { 0.12 }))
+        .border_color(color.opacity(border_alpha))
         .bg(linear_gradient(
             135.,
-            linear_color_stop(
-                color.opacity(if active { 0.08 + pulse * 0.4 } else { 0.035 }),
-                0.0,
-            ),
-            linear_color_stop(hsla(0., 0., 1., if active { 0.66 } else { 0.48 }), 1.0),
+            linear_color_stop(color.opacity(fill_alpha), 0.0),
+            linear_color_stop(hsla(0., 0., 1., if active { 0.7 } else { 0.48 }), 1.0),
         ))
         .child(
             div()
@@ -218,8 +206,8 @@ fn auth_lifecycle_chip(
                 .size(px(24.))
                 .rounded(px(999.))
                 .border_1()
-                .border_color(color.opacity(if active { 0.38 + pulse } else { 0.18 }))
-                .bg(color.opacity(if active { 0.15 + pulse } else { 0.06 }))
+                .border_color(color.opacity(step_border_alpha))
+                .bg(color.opacity(step_fill_alpha))
                 .flex()
                 .items_center()
                 .justify_center()

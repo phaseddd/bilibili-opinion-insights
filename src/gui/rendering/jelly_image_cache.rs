@@ -1216,7 +1216,7 @@ mod tests {
             contact: 0.28,
             aura: 0.2,
             error_shake: 0.,
-            chain: JellyProgressChainSnapshot { offsets: [0.; 9] },
+            chain: JellyProgressChainSnapshot::straight(),
         }
     }
 

@@ -161,26 +161,8 @@ pub fn jelly_progress(
                             let ribbon_highlight = jelly_chained_ribbon_highlight(chained_shape);
                             window.paint_path(
                                 ribbon_highlight,
-                                token.specular.opacity(0.22 + pulse * 0.18),
+                                token.specular.opacity(0.08 + pulse * 0.06),
                             );
-
-                            let inner_width = (track_w * fill).max(track_h * 0.34 + 18.);
-                            let inner_shape = JellyPathShape {
-                                origin_x: origin_x + 7. + velocity_nudge * 0.32,
-                                origin_y: origin_y + track_h * 0.2 + motion_snapshot.pressure * 1.2,
-                                width: inner_width * (0.96 - motion_snapshot.squash_y * 0.04),
-                                height: track_h * (0.58 - motion_snapshot.pressure * 0.04),
-                                inset: 7.,
-                                inner_inset: 5.,
-                                cap_taper: (fill * 0.26).clamp(0., 1.),
-                                pressure: motion_snapshot.pressure,
-                                rebound: motion_snapshot.rebound,
-                                squash_x: motion_snapshot.squash_x,
-                                squash_y: motion_snapshot.squash_y * 0.54,
-                            };
-                            let fill_path = jelly_round_rect(inner_shape);
-                            window
-                                .paint_path(fill_path, token.core_top.opacity(0.52 + pulse * 0.16));
                         },
                     )
                     .absolute()

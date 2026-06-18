@@ -304,7 +304,7 @@ fn lerp(start: f32, end: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use crate::gui::materials::{JellyMaterialToken, JellyTone};
-    use crate::gui::motion::JellyProgressChainSnapshot;
+    use crate::gui::motion::{JellyProgressChainSnapshot, PROGRESS_CHAIN_POINTS};
     use crate::gui::rendering::jelly_geometry::{
         JellyRibbonChainShape, JellyRibbonShape, jelly_ribbon_profile,
     };
@@ -395,9 +395,7 @@ mod tests {
                 compression: 0.72,
                 phase: 1.4,
             },
-            chain: JellyProgressChainSnapshot {
-                offsets: [0., -0.04, -0.12, -0.16, -0.18, -0.12, -0.07, -0.03, 0.],
-            },
+            chain: sample_chain(),
         });
         let material = JellyMaterialToken::for_tone(JellyTone::Primary, &Palette::default());
 
@@ -410,6 +408,15 @@ mod tests {
                 ..JellyRibbonBitmapConfig::default()
             },
         )
+    }
+
+    fn sample_chain() -> JellyProgressChainSnapshot {
+        let mut offsets = [0.; PROGRESS_CHAIN_POINTS];
+        for (idx, offset) in offsets.iter_mut().enumerate() {
+            let t = idx as f32 / (PROGRESS_CHAIN_POINTS - 1) as f32;
+            *offset = -0.18 * (std::f32::consts::PI * t).sin().max(0.);
+        }
+        JellyProgressChainSnapshot::from_offsets(offsets)
     }
 
     fn average_covered_rgb(

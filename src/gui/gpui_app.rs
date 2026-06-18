@@ -7,7 +7,7 @@ use std::sync::{
 use std::time::{Duration, SystemTime};
 
 use gpui::{
-    App, AppContext as _, Application, Bounds, ClickEvent, Context, Entity, FontWeight,
+    App, AppContext as _, Application, Bounds, ClickEvent, Context, Entity, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, WindowBounds, WindowOptions, div, hsla,
     linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, relative, rgb, size,
@@ -56,8 +56,8 @@ use crate::gui::views::auth_gate::{
     qr_lifecycle_card, qr_stage, session_capsule,
 };
 use crate::gui::views::primitives::{
-    form_section, jelly_form_field, metric_chip, option_group, panel, panel_title, phase_kind,
-    product_mark, progress_visual_phase, status_capsule, status_dot, validation_box,
+    form_section, jelly_form_field, option_group, panel, panel_title, phase_kind, product_mark,
+    progress_visual_phase, status_capsule, status_dot, validation_box,
 };
 use crate::gui::views::workbench_widgets::{empty_result_state, failure_row, result_row};
 use crate::gui::workers::auth_worker::{
@@ -330,10 +330,10 @@ impl BiliOpinionGui {
         palette: &Palette,
         request: SwitchImageConfig,
     ) -> Option<JellySwitchImage> {
-        let jelly_tone = switch_tone(request.tone);
+        let jelly_tone = switch_tone(request.tone, request.checked);
         let (width, height) = match request.size {
-            JellySwitchSize::Standard => (118., 42.),
-            JellySwitchSize::Compact => (100., 36.),
+            JellySwitchSize::Standard => (96., 42.),
+            JellySwitchSize::Compact => (82., 36.),
         };
 
         self.visual
@@ -994,7 +994,7 @@ impl BiliOpinionGui {
                                     .h_full()
                                     .gap(px(18.))
                                     .child(auth_summary_block(&self.auth, palette))
-                                    .child(auth_lifecycle_block(&self.auth, palette, motion_tick))
+                                    .child(auth_lifecycle_block(&self.auth, palette))
                                     .child(auth_risk_block(&self.auth.session, palette))
                                     .child(
                                         v_flex()
@@ -1663,49 +1663,31 @@ impl BiliOpinionGui {
             .progress
             .motion_snapshot(self.task.phase, self.visual.motion_tick);
         let progress_tone = progress_tone(self.task.phase);
-        let progress_bitmap = self
-            .visual
-            .image_cache
-            .progress_image(JellyProgressImageRequest {
-                width: 920.,
-                height: 46.,
-                quality: JellyProgressImageQuality::Main,
-                motion: progress_motion,
-                phase: progress_image_phase(self.task.phase),
-                tone: progress_tone,
-                material: crate::gui::materials::JellyMaterialToken::for_tone(
-                    progress_tone,
-                    palette,
-                ),
-            });
+        let progress_bitmap = (!self.task.phase.is_busy())
+            .then(|| {
+                self.visual
+                    .image_cache
+                    .progress_image(JellyProgressImageRequest {
+                        width: 920.,
+                        height: 46.,
+                        quality: JellyProgressImageQuality::Main,
+                        motion: progress_motion,
+                        phase: progress_image_phase(self.task.phase),
+                        tone: progress_tone,
+                        material: crate::gui::materials::JellyMaterialToken::for_tone(
+                            progress_tone,
+                            palette,
+                        ),
+                    })
+            })
+            .flatten();
         let phase_kind = phase_kind(self.task.phase);
         let status_capsule_image =
             self.capsule_image(palette, phase_kind, 136., self.task.phase.is_busy());
-        let comments_scanned_image = self.metric_surface_image(
-            palette,
-            EventKind::Comments,
-            self.task.progress.comments_scanned,
-        );
-        let comments_appended_image = self.metric_surface_image(
-            palette,
-            EventKind::Success,
-            self.task.progress.comments_appended,
-        );
-        let danmaku_scanned_image = self.metric_surface_image(
-            palette,
-            EventKind::Danmaku,
-            self.task.progress.danmaku_scanned,
-        );
-        let danmaku_segments_image = self.metric_surface_image(
-            palette,
-            EventKind::Warning,
-            self.task.progress.danmaku_segments,
-        );
-
         panel(palette)
             .flex_shrink_0()
-            .max_h(px(430.))
-            .gap(px(14.))
+            .max_h(px(360.))
+            .gap(px(12.))
             .child(
                 h_flex()
                     .items_center()
@@ -1727,49 +1709,39 @@ impl BiliOpinionGui {
             .when(!self.task.lanes.is_empty(), |this| {
                 this.child(self.render_task_lanes(palette))
             })
-            .child(
-                v_flex()
-                    .gap(px(10.))
-                    .child(h_flex().gap(px(10.)).children([
-                        metric_chip(
-                            "评论扫描",
-                            self.task.progress.comments_scanned,
-                            palette.accent_2,
-                            palette,
-                            comments_scanned_image,
-                        ),
-                        metric_chip(
-                            "评论新增",
-                            self.task.progress.comments_appended,
-                            palette.success,
-                            palette,
-                            comments_appended_image,
-                        ),
-                    ]))
-                    .child(h_flex().gap(px(10.)).children([
-                        metric_chip(
-                            "弹幕扫描",
-                            self.task.progress.danmaku_scanned,
-                            palette.accent,
-                            palette,
-                            danmaku_scanned_image,
-                        ),
-                        metric_chip(
-                            "分段",
-                            self.task.progress.danmaku_segments,
-                            palette.warning,
-                            palette,
-                            danmaku_segments_image,
-                        ),
-                    ])),
-            )
+            .child(h_flex().w_full().gap(px(8.)).children([
+                metric_pill(
+                    "评论扫描",
+                    self.task.progress.comments_scanned,
+                    palette.accent_2,
+                    palette,
+                ),
+                metric_pill(
+                    "评论新增",
+                    self.task.progress.comments_appended,
+                    palette.success,
+                    palette,
+                ),
+                metric_pill(
+                    "弹幕扫描",
+                    self.task.progress.danmaku_scanned,
+                    palette.accent,
+                    palette,
+                ),
+                metric_pill(
+                    "弹幕分段",
+                    self.task.progress.danmaku_segments,
+                    palette.warning,
+                    palette,
+                ),
+            ]))
             .child(self.render_run_summary(palette))
     }
 
     fn render_task_lanes(&mut self, palette: &Palette) -> impl IntoElement {
         v_flex()
             .id("gui-task-lanes-scroll")
-            .max_h(px(178.))
+            .max_h(px(132.))
             .gap(px(8.))
             .p(px(8.))
             .rounded(px(10.))
@@ -1779,20 +1751,26 @@ impl BiliOpinionGui {
             .children(self.task.lanes.iter().map(|lane| {
                 let motion = lane.motion_snapshot(self.visual.motion_tick);
                 let tone = jelly_task_lane_tone(lane);
-                let bitmap = self
-                    .visual
-                    .image_cache
-                    .progress_image(JellyProgressImageRequest {
-                        width: 360.,
-                        height: 26.,
-                        quality: JellyProgressImageQuality::Lane,
-                        motion,
-                        phase: lane_image_phase(lane.phase),
-                        tone,
-                        material: crate::gui::materials::JellyMaterialToken::for_tone(
-                            tone, palette,
-                        ),
-                    });
+                let bitmap = (!matches!(
+                    lane.phase,
+                    TaskLanePhase::Discovering | TaskLanePhase::Running | TaskLanePhase::Cancelling
+                ))
+                .then(|| {
+                    self.visual
+                        .image_cache
+                        .progress_image(JellyProgressImageRequest {
+                            width: 360.,
+                            height: 26.,
+                            quality: JellyProgressImageQuality::Lane,
+                            motion,
+                            phase: lane_image_phase(lane.phase),
+                            tone,
+                            material: crate::gui::materials::JellyMaterialToken::for_tone(
+                                tone, palette,
+                            ),
+                        })
+                })
+                .flatten();
 
                 jelly_task_lane(lane, self.visual.motion_tick, palette, bitmap)
             }))
@@ -1872,22 +1850,6 @@ impl BiliOpinionGui {
             980.,
             78.,
             false,
-        )
-    }
-
-    fn metric_surface_image(
-        &mut self,
-        palette: &Palette,
-        kind: EventKind,
-        value: usize,
-    ) -> Option<JellySurfaceImage> {
-        self.surface_image_for_kind(
-            palette,
-            kind,
-            JellySurfaceDensity::Result,
-            460.,
-            84.,
-            value > 0,
         )
     }
 
@@ -2162,6 +2124,47 @@ fn collect_scope_label(comments: bool, danmaku: bool) -> &'static str {
     }
 }
 
+fn metric_pill(label: &'static str, value: usize, color: Hsla, palette: &Palette) -> gpui::Div {
+    h_flex()
+        .flex_1()
+        .min_w(px(0.))
+        .items_center()
+        .justify_between()
+        .gap(px(8.))
+        .px(px(10.))
+        .py(px(7.))
+        .rounded(px(9.))
+        .border_1()
+        .border_color(color.opacity(0.18))
+        .bg(color.opacity(if value > 0 { 0.08 } else { 0.035 }))
+        .child(
+            h_flex()
+                .min_w(px(0.))
+                .gap(px(6.))
+                .items_center()
+                .child(status_dot(color))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(11.))
+                        .text_color(palette.muted)
+                        .child(label),
+                ),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(if value > 0 {
+                    palette.text
+                } else {
+                    palette.muted
+                })
+                .child(format!("{value}")),
+        )
+}
+
 fn auth_event_kind(session: &SessionMode) -> EventKind {
     match session.kind {
         SessionKind::LoggedIn => EventKind::Success,
@@ -2211,7 +2214,11 @@ fn button_tone(tone: JellyActionTone) -> JellyTone {
     }
 }
 
-fn switch_tone(tone: JellySwitchTone) -> JellyTone {
+fn switch_tone(tone: JellySwitchTone, checked: bool) -> JellyTone {
+    if !checked {
+        return JellyTone::Neutral;
+    }
+
     match tone {
         JellySwitchTone::Primary => JellyTone::Primary,
         JellySwitchTone::Cyan => JellyTone::Cyan,

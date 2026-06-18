@@ -1,8 +1,8 @@
 use gpui::{FillOptions, Path, PathBuilder, PathStyle, Pixels, point, px};
 
-use crate::gui::motion::JellyProgressChainSnapshot;
+use crate::gui::motion::{JellyProgressChainSnapshot, PROGRESS_CHAIN_POINTS};
 
-const RIBBON_POINTS: usize = 9;
+const RIBBON_POINTS: usize = PROGRESS_CHAIN_POINTS;
 type RibbonPoint = (f32, f32);
 type RibbonPoints = [RibbonPoint; RIBBON_POINTS];
 type RibbonEdges = (RibbonPoints, RibbonPoints);
@@ -114,7 +114,7 @@ pub(crate) fn jelly_round_rect(shape: JellyPathShape) -> Path<Pixels> {
 }
 
 pub(crate) fn jelly_ribbon_profile(shape: JellyRibbonChainShape) -> JellyRibbonProfile {
-    ribbon_profile_with_offsets(shape.shape, 0., 1., shape.chain.offsets)
+    ribbon_profile_with_offsets(shape.shape, 0., 1., shape.chain)
 }
 
 #[allow(dead_code)]
@@ -227,7 +227,7 @@ pub(crate) fn jelly_chained_ribbon_highlight(shape: JellyRibbonChainShape) -> Pa
         shape.shape,
         -shape.shape.height * 0.19,
         0.28,
-        shape.chain.offsets,
+        shape.chain,
     ));
     let mut bottom = top;
     for (idx, point) in bottom.iter_mut().enumerate() {
@@ -244,7 +244,7 @@ pub(crate) fn jelly_chained_ribbon_shadow(shape: JellyRibbonChainShape) -> Path<
         shape.shape,
         shape.shape.height * 0.2,
         0.78,
-        shape.chain.offsets,
+        shape.chain,
     ));
     for point in top.iter_mut().chain(bottom.iter_mut()) {
         point.1 += shape.shape.height * 0.18;
@@ -256,7 +256,7 @@ fn ribbon_profile_with_offsets(
     shape: JellyRibbonShape,
     y_offset: f32,
     thickness_scale: f32,
-    chain_offsets: [f32; RIBBON_POINTS],
+    chain: JellyProgressChainSnapshot,
 ) -> JellyRibbonProfile {
     let progress = shape.progress.clamp(0.02, 1.);
     let width = shape.width.max(32.);
@@ -276,13 +276,19 @@ fn ribbon_profile_with_offsets(
     let mut half_thicknesses = [0.; RIBBON_POINTS];
 
     for idx in 0..RIBBON_POINTS {
-        let t = idx as f32 / (RIBBON_POINTS - 1) as f32;
+        let base_t = idx as f32 / (RIBBON_POINTS - 1) as f32;
+        let t = chain.positions[idx].0.clamp(0., 1.);
         let sine = (std::f32::consts::PI * t).sin();
         let end_taper = 1. - (2. * (t - 0.5).abs()).clamp(0., 1.);
         let x = start_x + (end_x - start_x) * t;
         let local_wave = (wave_phase + t * std::f32::consts::PI * 1.6).sin();
         let arch = -sine * active_amp * (0.42 + compression * 0.58);
-        let chain_arch = chain_offsets[idx].clamp(-0.5, 0.35) * height;
+        let chain_arch = chain.positions[idx].1.clamp(-0.5, 0.35) * height;
+        let control_lift = (chain.control_points[idx].1 - chain.positions[idx].1)
+            .clamp(-0.08, 0.08)
+            * height
+            * 0.18;
+        let chain_x = (chain.positions[idx].0 - base_t).clamp(-0.06, 0.06) * height * 1.35;
         let wobble = local_wave * (pressure + compression * 0.34) * height * 0.055 * end_taper;
         let tail_pull = rebound * (t - 0.5) * height * 0.14;
         let half = (base_half
@@ -293,7 +299,7 @@ fn ribbon_profile_with_offsets(
                 0.
             })
         .max(2.5);
-        let y = center_y + arch + chain_arch + wobble + tail_pull;
+        let y = center_y + arch + chain_arch + control_lift + wobble + tail_pull;
         let cap_push = if idx == RIBBON_POINTS - 1 {
             rebound.max(0.) * height * 0.2
         } else if idx == 0 {
@@ -301,7 +307,7 @@ fn ribbon_profile_with_offsets(
         } else {
             0.
         };
-        centers[idx] = (x + cap_push, y);
+        centers[idx] = (x + chain_x + cap_push, y);
         half_thicknesses[idx] = half;
     }
 
@@ -325,7 +331,12 @@ fn ribbon_profile_with_offsets(
                 centers[idx + 1].1 - centers[idx - 1].1,
             )
         };
-        let normal = normalize((-tangent.1, tangent.0));
+        let path_normal = normalize((-tangent.1, tangent.0));
+        let chain_normal = chain.normals[idx];
+        let normal = normalize((
+            path_normal.0 * 0.82 + chain_normal.0 * 0.18,
+            path_normal.1 * 0.82 + chain_normal.1 * 0.18,
+        ));
         points[idx] = JellyRibbonProfilePoint {
             center: centers[idx],
             normal,
@@ -484,7 +495,7 @@ mod tests {
                 compression: 0.,
                 phase: 0.,
             },
-            chain: JellyProgressChainSnapshot { offsets: [0.; 9] },
+            chain: JellyProgressChainSnapshot::straight(),
         };
 
         let _ = jelly_chained_ribbon(shape);
@@ -506,9 +517,7 @@ mod tests {
                 compression: 0.7,
                 phase: 1.2,
             },
-            chain: JellyProgressChainSnapshot {
-                offsets: [0., -0.04, -0.12, -0.16, -0.18, -0.12, -0.07, -0.03, 0.],
-            },
+            chain: shaped_chain(-0.18),
         };
 
         let _ = jelly_chained_ribbon(shape);
@@ -581,9 +590,7 @@ mod tests {
                 compression: 1.,
                 phase: 8.1,
             },
-            chain: JellyProgressChainSnapshot {
-                offsets: [0.31, -0.5, -0.2, 0.2, 0.35, 0.1, -0.4, -0.1, 0.],
-            },
+            chain: extreme_chain(),
         };
         let profile = jelly_ribbon_profile(shape);
         let sample = sample_ribbon_sdf(
@@ -645,9 +652,7 @@ mod tests {
                 compression: 1.,
                 phase: 2.4,
             },
-            chain: JellyProgressChainSnapshot {
-                offsets: [0.1, -0.12, -0.32, -0.5, -0.2, 0.12, 0.2, 0.1, 0.],
-            },
+            chain: low_progress_chain(),
         };
         let profile = jelly_ribbon_profile(shape);
         let mask = rasterize_ribbon_alpha_mask(&profile, 3., 8.);
@@ -670,9 +675,40 @@ mod tests {
                 compression: 0.7,
                 phase: 1.2,
             },
-            chain: JellyProgressChainSnapshot {
-                offsets: [0., -0.04, -0.12, -0.16, -0.18, -0.12, -0.07, -0.03, 0.],
-            },
+            chain: shaped_chain(-0.18),
         }
+    }
+
+    fn shaped_chain(amplitude: f32) -> JellyProgressChainSnapshot {
+        let mut offsets = [0.; RIBBON_POINTS];
+        for (idx, offset) in offsets.iter_mut().enumerate() {
+            let t = idx as f32 / (RIBBON_POINTS - 1) as f32;
+            *offset = amplitude * (std::f32::consts::PI * t).sin().max(0.);
+        }
+        JellyProgressChainSnapshot::from_offsets(offsets)
+    }
+
+    fn extreme_chain() -> JellyProgressChainSnapshot {
+        let mut offsets = [0.; RIBBON_POINTS];
+        for (idx, offset) in offsets.iter_mut().enumerate() {
+            let t = idx as f32 / (RIBBON_POINTS - 1) as f32;
+            let wave = (std::f32::consts::PI * t * 3.1).sin();
+            *offset = (wave * 0.34 - 0.08).clamp(-0.5, 0.35);
+        }
+        offsets[0] = 0.;
+        offsets[RIBBON_POINTS - 1] = 0.;
+        JellyProgressChainSnapshot::from_offsets(offsets)
+    }
+
+    fn low_progress_chain() -> JellyProgressChainSnapshot {
+        let mut offsets = [0.; RIBBON_POINTS];
+        for (idx, offset) in offsets.iter_mut().enumerate() {
+            let t = idx as f32 / (RIBBON_POINTS - 1) as f32;
+            let wave = (std::f32::consts::PI * t * 2.2).sin();
+            *offset = (wave * 0.28 - 0.16).clamp(-0.5, 0.28);
+        }
+        offsets[0] = 0.;
+        offsets[RIBBON_POINTS - 1] = 0.;
+        JellyProgressChainSnapshot::from_offsets(offsets)
     }
 }

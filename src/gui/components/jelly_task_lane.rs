@@ -184,7 +184,7 @@ fn jelly_lane_ribbon(
                 }
                 window.paint_path(
                     jelly_chained_ribbon_highlight(chained_shape),
-                    material.specular.opacity(0.16 + pulse * 0.12),
+                    material.specular.opacity(0.06 + pulse * 0.05),
                 );
             },
         )

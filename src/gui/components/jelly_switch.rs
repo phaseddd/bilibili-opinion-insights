@@ -41,10 +41,10 @@ pub struct JellySwitchConfig {
 
 pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
     let (track_w, track_h, thumb, text_size) = match config.size {
-        JellySwitchSize::Standard => (118., 42., 33., 11.5),
-        JellySwitchSize::Compact => (100., 36., 30., 11.),
+        JellySwitchSize::Standard => (96., 42., 33., 11.5),
+        JellySwitchSize::Compact => (82., 36., 29., 11.),
     };
-    let material = switch_material(config.tone, palette);
+    let material = switch_material(config.tone, config.checked, palette);
     let opacity = if config.enabled { 1. } else { 0.46 };
     let progress = config.motion.progress.clamp(0., 1.);
     let endpoint = if config.checked { 1. } else { -1. };
@@ -231,7 +231,11 @@ pub fn jelly_switch(config: JellySwitchConfig, palette: &Palette) -> gpui::Div {
         )
 }
 
-fn switch_material(tone: JellySwitchTone, palette: &Palette) -> JellyMaterialToken {
+fn switch_material(tone: JellySwitchTone, checked: bool, palette: &Palette) -> JellyMaterialToken {
+    if !checked {
+        return JellyMaterialToken::for_tone(JellyTone::Neutral, palette);
+    }
+
     JellyMaterialToken::for_tone(
         match tone {
             JellySwitchTone::Primary => JellyTone::Primary,
