@@ -36,7 +36,11 @@ async fn run() -> Result<()> {
         })
         .await
         .ok_or_else(|| anyhow!("no headless wgpu adapter found"))?;
-    println!("adapter: {:?} ({:?})", adapter.get_info().name, adapter.get_info().backend);
+    println!(
+        "adapter: {:?} ({:?})",
+        adapter.get_info().name,
+        adapter.get_info().backend
+    );
 
     let (device, queue) = adapter
         .request_device(
@@ -106,7 +110,11 @@ async fn run() -> Result<()> {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("target"),
-        size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -210,7 +218,11 @@ async fn run() -> Result<()> {
                     rows_per_image: Some(SIZE),
                 },
             },
-            wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: SIZE,
+                height: SIZE,
+                depth_or_array_layers: 1,
+            },
         );
         queue.submit(Some(encoder.finish()));
 
