@@ -1,17 +1,32 @@
 //! jelly-bake —— 离线 headless wgpu 烘焙工具。
-//! spike 0-A: 验证 headless 离屏渲染 → readback → PNG 全链路在 Windows 跑通。
+//! spike 0-B: 移植 jelly-switch 圆角盒胶体 raymarch，固定机位烤一张静止厚胶按钮。
 
 use anyhow::{Result, anyhow};
+use glam::{Mat4, Vec3};
 use std::path::Path;
 
 const SIZE: u32 = 512;
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct JellyUniform {
+    view_inv: [[f32; 4]; 4],
+    proj_inv: [[f32; 4]; 4],
+    light_dir: [f32; 4],
+    jelly_color: [f32; 4],
+    progress: f32,
+    squash_x: f32,
+    squash_z: f32,
+    wiggle_x: f32,
+    exposure: f32,
+    _pad: [f32; 3],
+}
 
 fn main() -> Result<()> {
     pollster::block_on(run())
 }
 
 async fn run() -> Result<()> {
-    // 1. headless 实例 + adapter（不带 surface）
     let instance = wgpu::Instance::default();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -35,7 +50,61 @@ async fn run() -> Result<()> {
         )
         .await?;
 
-    // 2. 离屏 color target（非 srgb，所见即所得）
+    // ---- 相机（jelly-switch/camera.ts 的固定机位）----
+    let eye = Vec3::new(0.024, 2.7, 1.9);
+    let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
+    let proj = Mat4::perspective_rh(26f32.to_radians(), 1.0, 0.1, 10.0);
+    let light = Vec3::new(0.19, -0.24, 0.75).normalize();
+
+    let uniform = JellyUniform {
+        view_inv: view.inverse().to_cols_array_2d(),
+        proj_inv: proj.inverse().to_cols_array_2d(),
+        light_dir: [light.x, light.y, light.z, 0.0],
+        jelly_color: [0.08, 0.5, 1.0, 1.0], // 青蓝按钮
+        progress: 1.0,
+        squash_x: 0.0,
+        squash_z: 0.0,
+        wiggle_x: 0.0,
+        exposure: 1.5,
+        _pad: [0.0; 3],
+    };
+
+    let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("uniform"),
+        size: std::mem::size_of::<JellyUniform>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&uniform_buf, 0, bytemuck::bytes_of(&uniform));
+
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("bg"),
+        layout: &bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buf.as_entire_binding(),
+        }],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("pl"),
+        bind_group_layouts: &[&bgl],
+        push_constant_ranges: &[],
+    });
+
+    // ---- 离屏 target ----
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("target"),
@@ -47,16 +116,15 @@ async fn run() -> Result<()> {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let view_tex = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // 3. pipeline
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("jelly"),
         source: wgpu::ShaderSource::Wgsl(include_str!("jelly.wgsl").into()),
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("pipeline"),
-        layout: None,
+        layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
@@ -80,7 +148,7 @@ async fn run() -> Result<()> {
         cache: None,
     });
 
-    // 4. readback buffer（bytes_per_row 需 256 对齐）
+    // ---- readback ----
     let bpp = 4u32;
     let unpadded = SIZE * bpp;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -92,17 +160,16 @@ async fn run() -> Result<()> {
         mapped_at_creation: false,
     });
 
-    // 5. render pass + copy
     let mut encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     {
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("rp"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
+                view: &view_tex,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.93, g: 0.94, b: 0.96, a: 1.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -111,6 +178,7 @@ async fn run() -> Result<()> {
             occlusion_query_set: None,
         });
         rp.set_pipeline(&pipeline);
+        rp.set_bind_group(0, &bind_group, &[]);
         rp.draw(0..3, 0..1);
     }
     encoder.copy_texture_to_buffer(
@@ -132,7 +200,6 @@ async fn run() -> Result<()> {
     );
     queue.submit(Some(encoder.finish()));
 
-    // 6. map → 去除行对齐 padding → PNG
     let slice = readback.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |res| {
@@ -151,10 +218,10 @@ async fn run() -> Result<()> {
     readback.unmap();
 
     std::fs::create_dir_all("tmp")?;
-    let out = Path::new("tmp/jelly-bake-0a.png");
-    let img = image::RgbaImage::from_raw(SIZE, SIZE, pixels)
-        .ok_or_else(|| anyhow!("raw buffer -> image failed"))?;
-    img.save(out)?;
+    let out = Path::new("tmp/jelly-bake-0b.png");
+    image::RgbaImage::from_raw(SIZE, SIZE, pixels)
+        .ok_or_else(|| anyhow!("raw buffer -> image failed"))?
+        .save(out)?;
     println!("wrote {}", out.display());
     Ok(())
 }
